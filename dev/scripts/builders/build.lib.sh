@@ -272,7 +272,10 @@ png() {
     ;;
     png-prep)
       cd "$M_SOURCES/png"; error
-      cat "$M_PATCHES/png/"version_script_1.6.5.patch | patch -p1 --verbose &>> "$M_LOGS/gd.txt" ; error
+      # The dfn.awk PNG_EXPORTA fix is only needed on old libpng; 1.6.44 handles it upstream.
+      if [[ $PNG =~ "libpng-1.6.37" ]] || [[ $PNG =~ "libpng-1.6.5" ]]; then
+        cat "$M_PATCHES/png/"version_script_1.6.5.patch | patch -p1 --verbose &>> "$M_LOGS/gd.txt" ; error
+      fi
     ;;
     png-build)
       cd "$M_SOURCES/png"; error
@@ -287,7 +290,7 @@ png() {
       export CXXFLAGS="$M_SYM_INCLUDES -fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 $M_CXXFLAGS"
       export CPPFLAGS="$M_SYM_INCLUDES -fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 $M_CPPFLAGS"
 
-      ./configure --prefix="$M_LOCAL" &>> "$M_LOGS/png.txt"; error
+      ./configure --prefix="$M_LOCAL" --enable-shared=no &>> "$M_LOGS/png.txt"; error
 
       unset CFLAGS; unset CXXFLAGS; unset CPPFLAGS; unset LDFLAGS
 
