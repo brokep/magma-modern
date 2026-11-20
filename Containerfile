@@ -34,9 +34,12 @@ ARG MAGMA_REF=openssl3
 RUN dnf -y install epel-release || dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
 RUN dnf -y install dnf-plugins-core && (dnf config-manager --set-enabled crb || dnf config-manager --set-enabled powertools || true)
 
-# Build + runtime dependencies. The last line (libnsl2-devel libwebp-devel json-c-devel
-# brotli-devel) is the gap vs. robox's rocky9 list: without it the final magmad.so link fails
-# with "ld: cannot find -lnsl / -lwebp / -ljson-c / -lbrotlidec".
+# Build + runtime dependencies. The libnsl2-devel/libwebp-devel/json-c-devel/brotli-devel line is the
+# gap vs. robox's rocky9 list: without it the final magmad.so link fails with "ld: cannot find -lnsl /
+# -lwebp / -ljson-c / -lbrotlidec". The clamav line supplies the virus scanner: magma no longer vendors
+# ClamAV (modern ClamAV needs a Rust toolchain to build), so it links the platform's prebuilt libclamav
+# instead -- clamav-devel provides clamav.h and libclamav.so for the build, clamav-lib the runtime
+# library, and clamav-freshclam the signature updater used by dev/scripts/freshen/freshen.clamav.sh.
 RUN dnf -y install \
       autoconf automake bison byacc cmake cpp cscope ctags diffstat elfutils expect flex gcc gcc-c++ gdb \
       gettext glibc-devel glibc-headers indent intltool jq kernel-headers libarchive libbsd libbsd-devel \
@@ -46,6 +49,7 @@ RUN dnf -y install \
       pkgconfig procps python3 swig texinfo unzip valgrind valgrind-devel wget zip zlib-devel m4 rsync git \
       inotify-tools haveged mariadb-server mariadb memcached postfix \
       libnsl2-devel libwebp-devel json-c-devel brotli-devel \
+      clamav clamav-lib clamav-devel clamav-freshclam \
     && dnf clean all
 
 # Point the MySQL client at the same socket Magma uses.

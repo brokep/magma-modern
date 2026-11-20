@@ -272,12 +272,9 @@ void virus_stop(void) {
 	// Frees the database directory status.
 	cl_statfree_d(&virus_stat);
 
-	// My very own ClamAV shutdown function.
-	cl_shutdown_d();
-
-	// The lt_dlexit was added to the cl_shutdown function by a custom patch.
-	// A call to lt_dlexit() is required to release all of the memory used by ClamAV.
-	// lt_dlexit_d();
+	// ClamAV 1.x (CMake + Rust, libltdl removed) provides no public shutdown hook, and the old
+	// cl_shutdown/lt_dlexit custom patch only freed a couple of MIME lookup tables at process exit.
+	// The daemon is tearing down here, so the OS reclaims that memory; no explicit call is needed.
 
 	// Update the ClamAV engine trackers. The values below are used to indicate a shutdown state.
 	stats_set_by_name("provider.virus.available", 0);
@@ -469,8 +466,8 @@ bool_t lib_load_clamav(void) {
 
 	symbol_t clamav[] = {
 		M_BIND(cl_countsigs), M_BIND(cl_engine_compile), M_BIND(cl_engine_free), M_BIND(cl_engine_new),	M_BIND(cl_engine_set_num),
-		M_BIND(cl_engine_set_str), M_BIND(cl_init),	M_BIND(cl_load), M_BIND(cl_retver),	M_BIND(cl_scandesc), M_BIND(cl_shutdown),
-		M_BIND(cl_statchkdir), M_BIND(cl_statfree), M_BIND(cl_statinidir), M_BIND(cl_strerror),	M_BIND(lt_dlexit),
+		M_BIND(cl_engine_set_str), M_BIND(cl_init),	M_BIND(cl_load), M_BIND(cl_retver),	M_BIND(cl_scandesc),
+		M_BIND(cl_statchkdir), M_BIND(cl_statfree), M_BIND(cl_statinidir), M_BIND(cl_strerror),
 	};
 
 	if (!lib_symbols(sizeof(clamav) / sizeof(symbol_t), clamav)) {

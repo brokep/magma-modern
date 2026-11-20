@@ -87,8 +87,19 @@ These instructions are targeted at systems running CentOS 6.
 Install the dependencies (make sure that EPEL is enabled):
 
 ```shell
-yum -y install gcc make autoconf automake binutils bison flex gcc-c++ gettext libtool make patch pkgconfig mysql-server memcached gettext-devel patch perl perl-Time-HiRes check check-devel ncurses-devel libbsd-devel zlib-devel valgrind valgrind-devel
+yum -y install gcc make autoconf automake binutils bison flex gcc-c++ gettext libtool make patch pkgconfig mysql-server memcached gettext-devel patch perl perl-Time-HiRes check check-devel ncurses-devel libbsd-devel zlib-devel valgrind valgrind-devel clamav clamav-lib clamav-devel
 ```
+
+> **Note on ClamAV:** magma no longer vendors and compiles ClamAV from source.
+> Modern ClamAV (0.105 and later, including the 1.x LTS lines) requires a Rust
+> toolchain to build, so instead the virus scanner is consumed as the platform's
+> prebuilt, security-patched shared `libclamav`: the `clamav-devel` headers and
+> `libclamav.so` are needed at build time, and the `clamav-lib` runtime library at
+> run time. On RHEL/Rocky 9 these come from EPEL (`dnf install clamav clamav-lib
+> clamav-devel`). magma links `libclamav` into `magmad.so` as an external dependency
+> and resolves every ClamAV entry point via `dlsym` at runtime, as it always has.
+> Keeping the scanner on the distribution package means security updates arrive
+> through the normal system update channel rather than a magma rebuild.
 
 **MySQL**
 

@@ -34,11 +34,9 @@ int (*BZ2_bzBuffToBuffDecompress_d)(char *dest, unsigned int *destLen, char *sou
 int (*BZ2_bzBuffToBuffCompress_d)(char *dest, unsigned int *destLen, char *source, unsigned int sourceLen, int blockSize100k, int verbosity, int workFactor) = NULL;
 
 //! CLAMAV
-int (*lt_dlexit_d)(void) = NULL;
-void (*cl_shutdown_d)(void) = NULL;
 const char * (*cl_retver_d)(void) = NULL;
 cl_error_t (*cl_init_d)(unsigned int initoptions) = NULL;
-const char * (*cl_strerror_d)(int clerror) = NULL;
+const char * (*cl_strerror_d)(cl_error_t clerror) = NULL;
 struct cl_engine * (*cl_engine_new_d)(void) = NULL;
 cl_error_t (*cl_statfree_d)(struct cl_stat *dbstat) = NULL;
 cl_error_t (*cl_engine_free_d)(struct cl_engine *engine) = NULL;

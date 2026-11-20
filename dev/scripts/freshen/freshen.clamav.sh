@@ -3,9 +3,13 @@
 # Name: freshen.clamav.sh
 # Author: Ladar Levison
 #
-# Description: Used to update the Clam Antivirus Signatures using the bundled freshclam
+# Description: Used to update the Clam Antivirus Signatures using the system freshclam
 # binary and the sandbox config file. Note the update signatures will be placed in the
 # sandbox environment.
+#
+# ClamAV is no longer vendored, so this script uses the platform's freshclam/sigtool
+# (RHEL/Rocky 9: the clamav-freshclam and clamav packages) rather than the former
+# bundled binaries under lib/sources/clamav.
 
 # Handle self referencing, sourcing etc.
 if [[ $0 != $BASH_SOURCE ]]; then
@@ -29,18 +33,30 @@ else
 fi
 
 export MAGMA_DIST=`pwd`
-export LD_LIBRARY_PATH=$MAGMA_DIST/lib/sources/clamav/libclamav/.libs/:$MAGMA_DIST/lib/sources/clamav/libfreshclam/.libs/
+
+# ClamAV is provided by the platform now; use the system freshclam/sigtool from PATH.
+FRESHCLAM=`command -v freshclam`
+SIGTOOL=`command -v sigtool`
+if [ -z "$FRESHCLAM" ]; then
+  [[ -t 0 ]] && ${TPUT} setaf 1 || true
+  printf "The system freshclam binary was not found.\n"
+  printf "Install it before freshening signatures, e.g. on RHEL/Rocky 9:  dnf install clamav clamav-freshclam\n"
+  [[ -t 0 ]] && ${TPUT} sgr0 || true
+  exit 1
+fi
 
 # If the sandbox contains a CA bundle file, override the path to the CA file used by Freshclam.
 if [ -f $MAGMA_DIST/sandbox/etc/ca-bundle.crt ]; then
-  lib/sources/clamav/freshclam/.libs/freshclam --user $USER --ca=$MAGMA_DIST/sandbox/etc/ca-bundle.crt --datadir=$MAGMA_DIST/sandbox/virus --config-file=$MAGMA_DIST/sandbox/etc/freshclam.conf
+  "$FRESHCLAM" --user $USER --ca=$MAGMA_DIST/sandbox/etc/ca-bundle.crt --datadir=$MAGMA_DIST/sandbox/virus --config-file=$MAGMA_DIST/sandbox/etc/freshclam.conf
 else
-  lib/sources/clamav/freshclam/.libs/freshclam --user $USER --datadir=$MAGMA_DIST/sandbox/virus --config-file=$MAGMA_DIST/sandbox/etc/freshclam.conf
+  "$FRESHCLAM" --user $USER --datadir=$MAGMA_DIST/sandbox/virus --config-file=$MAGMA_DIST/sandbox/etc/freshclam.conf
 fi
 
 # Print statistics for all of the ClamAV database files.
 printf "\n\n"
-find sandbox/virus/ \( -type f -name "*.cvd" -print0 \) -or \( -type f -name "*.cld" -print0 \) | xargs -0 --replace={} bash -c '$MAGMA_DIST/lib/sources/clamav/sigtool/sigtool --info={} | grep -v Builder | grep -v MD5 | grep -v "Digital signature" ; printf "\n"'
+if [ -n "$SIGTOOL" ]; then
+  find sandbox/virus/ \( -type f -name "*.cvd" -print0 \) -or \( -type f -name "*.cld" -print0 \) | xargs -0 --replace={} bash -c '"'"$SIGTOOL"'" --info={} | grep -v Builder | grep -v MD5 | grep -v "Digital signature" ; printf "\n"'
+fi
 
 # Done.
 [[ -t 0 ]] && ${TPUT} setaf 2 || true ; printf "Done.\n" ; [[ -t 0 ]] && ${TPUT} sgr0 || true

@@ -134,11 +134,9 @@ extern int (*BZ2_bzBuffToBuffDecompress_d)(char *dest, unsigned int *destLen, ch
 extern int (*BZ2_bzBuffToBuffCompress_d)(char *dest, unsigned int *destLen, char *source, unsigned int sourceLen, int blockSize100k, int verbosity, int workFactor);
 
 //! CLAMAV
-extern int (*lt_dlexit_d)(void);
-extern void (*cl_shutdown_d)(void);
 extern const char * (*cl_retver_d)(void);
 extern cl_error_t (*cl_init_d)(unsigned int initoptions);
-extern const char * (*cl_strerror_d)(int clerror);
+extern const char * (*cl_strerror_d)(cl_error_t clerror);
 extern struct cl_engine * (*cl_engine_new_d)(void);
 extern cl_error_t (*cl_statfree_d)(struct cl_stat *dbstat);
 extern cl_error_t (*cl_engine_free_d)(struct cl_engine *engine);

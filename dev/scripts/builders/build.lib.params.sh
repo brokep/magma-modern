@@ -11,9 +11,18 @@ ZLIB="zlib-1.3.1"
 JPEG="jpeg-9f"
 PCRE="pcre2-10.44"
 BZIP2="bzip2-1.0.8"
-GEOIP="GeoIP-1.4.8"
-#CLAMAV="clamav-0.105.0"
-CLAMAV="clamav-0.103.6"
+# GeoIP (legacy, EOL 2018) has been dropped: nothing in magma ever called the GeoIP API, so it was
+# only dead weight linked into magmad.so. If real geolocation is wanted later, add libmaxminddb/GeoIP2
+# alongside an actual consumer rather than reviving the legacy library.
+# GEOIP="GeoIP-1.4.8"
+# ClamAV is no longer vendored/compiled from source. Modern ClamAV (0.105+, including the 1.x LTS lines)
+# requires a Rust toolchain to build; instead of pulling Rust into magma's build, the virus scanner is now
+# consumed as the platform's prebuilt, security-patched shared libclamav (linked into magmad.so as -lclamav
+# at the combine stage; magma still resolves every cl_* entry point via dlsym at runtime). Install the
+# system package before building -- on RHEL/Rocky 9: dnf install clamav clamav-lib clamav-devel (EPEL).
+# The old pinned source version is retained here only as a record of the last vendored release.
+#CLAMAV="clamav-0.103.6"
+#CLAMAV="clamav-1.4.5"
 #MARIADB="mariadb-connector-c-2.3.7"
 MARIADB="mariadb-connector-c-3.3.13"
 CHECKER="check-0.11.0"

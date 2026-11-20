@@ -14,7 +14,6 @@
 # dkim -:- openssl
 # freetype -:- zlib bzip2 png
 # gd -:- zlib png jpeg freetype
-# geoip -:- zlib
 # googtap -:-
 # googtest -:-
 # jansson -:-
@@ -1122,88 +1121,18 @@ bzip2() {
 
 }
 
-geoip() {
-
-  if [[ $1 == "geoip-extract" ]]; then
-    rm -f "$M_LOGS/geoip.txt"; error
-  elif [[ $1 != "geoip-log" ]]; then
-    date +"%n%nStarted $1 at %r on %x%n%n" &>> "$M_LOGS/geoip.txt"
-  fi
-
-  case "$1" in
-    geoip-extract)
-      extract $GEOIP "geoip" &>> "$M_LOGS/geoip.txt"
-    ;;
-    geoip-prep)
-      cd "$M_SOURCES/geoip"; error
-    ;;
-    geoip-build)
-      cd "$M_SOURCES/geoip"; error
-
-      if [ ! -f "$M_LDPATH"/libz.so ] || [ ! -f "$M_LDPATH"/libz.a ] || [ ! -f "$M_PKGPATH"/zlib.pc ]; then
-        [[ -t 0 ]] && ${TPUT} sgr0 || true; [[ -t 0 ]] && ${TPUT} setaf 3 || true; printf "\nPlease build zlib before geoip.\n"; [[ -t 0 ]] && ${TPUT} sgr0 || true
-        return 3
-      fi
-
-      export LDFLAGS="-L$M_LDPATH -Wl,-rpath,$M_LDPATH $M_LDFLAGS"
-      export CFLAGS="$M_SYM_INCLUDES -fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 $M_CFLAGS"
-      export CXXFLAGS="$M_SYM_INCLUDES -fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 $M_CXXFLAGS"
-      export CPPFLAGS="$M_SYM_INCLUDES -fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 $M_CPPFLAGS"
-
-      ./configure --prefix="$M_LOCAL" &>> "$M_LOGS/geoip.txt"; error
-
-      make &>> "$M_LOGS/geoip.txt"
-      if [ $? -ne 0 ]; then
-        # Fix for Ubuntu 12.04 LTS
-        echo "build failed... retrying with libtoolize" > "$M_LOGS/geoip.txt"
-        libtoolize -f &>> "$M_LOGS/geoip.txt"; error
-        ./configure &>> "$M_LOGS/geoip.txt"; error
-        make &>> "$M_LOGS/geoip.txt"; error
-      fi
-      make install &>> "$M_LOGS/geoip.txt"
-      unset CFLAGS; unset CXXFLAGS; unset CPPFLAGS; unset LDFLAGS
-    ;;
-    geoip-check)
-      cd "$M_SOURCES/geoip"; error
-      export LD_LIBRARY_PATH="$M_LDPATH"; error
-      export PATH="$M_BNPATH:$PATH"; error
-      make check &>> "$M_LOGS/geoip.txt"; error
-    ;;
-    geoip-check-full)
-      cd "$M_SOURCES/geoip"; error
-      export LD_LIBRARY_PATH="$M_LDPATH"; error
-      export PATH="$M_BNPATH:$PATH"; error
-      make check &>> "$M_LOGS/geoip.txt"; error
-    ;;
-    geoip-clean)
-      cd "$M_SOURCES/geoip"; error
-      make clean &>> "$M_LOGS/geoip.txt"; error
-    ;;
-    geoip-tail)
-      tail --lines=30 --follow=name --retry "$M_LOGS/geoip.txt"; error
-    ;;
-    geoip-log)
-      cat "$M_LOGS/geoip.txt"; error
-    ;;
-    geoip)
-      geoip "geoip-extract"
-      geoip "geoip-prep"
-      geoip "geoip-build"
-      if [ "$QUICK" != "yes" ]; then geoip "geoip-check"; fi
-    ;;
-    *)
-      printf "\nUnrecognized request.\n"
-      exit 2
-    ;;
-  esac
-
-  date +"Finished $1 at %r on %x"
-  date +"%n%nFinished $1 at %r on %x%n%n" &>> "$M_LOGS/geoip.txt"
-
-  return $?
-}
-
 clamav() {
+
+  # ClamAV is no longer vendored and compiled from source. Modern ClamAV (0.105 and later, including the
+  # 1.x LTS lines) requires a Rust toolchain to build. Rather than pull Rust into magma's build, we consume
+  # the platform's prebuilt, security-patched libclamav as an ordinary external shared library: it is linked
+  # into magmad.so at the combine stage (-lclamav), and magma still resolves every cl_* entry point through
+  # dlsym at runtime, exactly as before. Install the platform package before building; on RHEL/Rocky 9 that
+  # is "dnf install clamav clamav-lib clamav-devel" (from EPEL).
+  #
+  # The former from-source stages (extract/prep/check/clean) are intentionally no-ops so the shared build
+  # pipeline ("build.lib.sh all" and the parallel combo() dispatcher) can keep driving clamav-<stage>
+  # uniformly alongside the vendored libraries; clamav-build performs a preflight dependency check instead.
 
   if [[ $1 == "clamav-extract" ]]; then
     rm -f "$M_LOGS/clamav.txt"; error
@@ -1212,200 +1141,28 @@ clamav() {
   fi
 
   case "$1" in
-    clamav-extract)
-      extract $CLAMAV "clamav" &>> "$M_LOGS/clamav.txt"
-    ;;
-    clamav-prep)
-      # Patches cli_rarload() so it looks internally, and changes the name of cache_add() to cl_cache_add().
-      cd "$M_SOURCES/clamav"; error
-      if [[ $CLAMAV == "clamav-0.97" ]]; then
-        cat "$M_PATCHES/clamav/"rarload_097.patch | patch -p1 --verbose &>> "$M_LOGS/clamav.txt"; error
-        cat "$M_PATCHES/clamav/"cacheadd_097.patch | patch -p1 --verbose &>> "$M_LOGS/clamav.txt"; error
-        cat "$M_PATCHES/clamav/"ulimit_097.patch | patch -p1 --verbose &>> "$M_LOGS/clamav.txt"; error
-      elif [[ $CLAMAV =~ "clamav-0.97."[1-2] ]]; then
-        cat "$M_PATCHES/clamav/"cacheadd_0971.patch | patch -p1 --verbose &>> "$M_LOGS/clamav.txt"; error
-        cat "$M_PATCHES/clamav/"rarload_0971.patch | patch -p1 --verbose &>> "$M_LOGS/clamav.txt"; error
-        cat "$M_PATCHES/clamav/"ulimit_0971.patch | patch -p1 --verbose &>> "$M_LOGS/clamav.txt"; error
-        cat "$M_PATCHES/clamav/"shutdown_0972.patch | patch -p3 --verbose &>> "$M_LOGS/clamav.txt"; error
-      elif [[ $CLAMAV =~ "clamav-0.98.1" ]]; then
-        # Add the shutdown and clean up functions.
-        cat "$M_PATCHES/clamav/"shutdown_0981.patch | patch -p1 --verbose &>> "$M_LOGS/clamav.txt"; error
-
-        # Fix the rar library dynamic loading logic.
-        cat "$M_PATCHES/clamav/"rarload_0971.patch | patch -p1 --verbose &>> "$M_LOGS/clamav.txt"; error
-
-        # Fix reference conflict with OpenSSL over the name SHA256_CTX.
-        SHA_FILES=`grep --files-with-matches --recursive SHA256_CTX *`; error
-        sed -i -e "s/SHA256_CTX/CL_SHA256_CTX/g" $SHA_FILES; error
-        unset SHA_FILES
-      elif [[ $CLAMAV =~ "clamav-0.98.7" ]]; then
-
-        # Add the shutdown and clean up functions and fix the rar library dynamic loading logic.
-        cat "$M_PATCHES/clamav/"shutdown_rarload_0984.patch | patch -p1 --fuzz=100 --verbose &>> "$M_LOGS/clamav.txt"; error
-
-        # Output the version number and not the git commit hash.
-        cat "$M_PATCHES/clamav/"version_0984.patch | patch -p1 --verbose &>> "$M_LOGS/clamav.txt"; error
-
-        # Fix the zlib version check, so that 1.2.10+ doesn't trigger a spurious error.
-        cat "$M_PATCHES/clamav/"zlib_check_0992.patch | patch -p1 --verbose &>> "$M_LOGS/clamav.txt"; error
-      elif [[ $CLAMAV =~ "clamav-0.100.2" ]]; then
-        # Add the shutdown and clean up functions and fix the rar library dynamic loading logic.
-        cat "$M_PATCHES/clamav/"shutdown_rarload_01001.patch | patch -p1 --fuzz=100 --verbose &>> "$M_LOGS/clamav.txt"; error
-
-        # Output the version number and not the git commit hash.
-        cat "$M_PATCHES/clamav/"version_0984.patch | patch -p1 --verbose &>> "$M_LOGS/clamav.txt"; error
-      elif [[ $CLAMAV =~ "clamav-0.102.3" ]]; then 
-        # Add the shutdown and clean up functions and fix the rar library dynamic loading logic.
-        cat "$M_PATCHES/clamav/"shutdown_rarload_01023.patch | patch -p1 --fuzz=100 --verbose &>> "$M_LOGS/clamav.txt"; error
-
-        # Add the ability to dictate the CA bundle file location when running freshclam.
-        cat "$M_PATCHES/clamav/"freshclam_cafile_option_01023.patch | patch -p1 --verbose &>> "$M_LOGS/clamav.txt"; error
-        
-        # Output the version number and not the git commit hash.
-        cat "$M_PATCHES/clamav/"version_0984.patch | patch -p1 --verbose &>> "$M_LOGS/clamav.txt"; error
-      elif [[ $CLAMAV =~ ^clamav-0.103.[5-6]$ ]]; then 
-        # Add the shutdown and clean up functions and fix the rar library dynamic loading logic.
-        cat "$M_PATCHES/clamav/"shutdown_rarload_01035.patch | patch -p1 --fuzz=100 --verbose &>> "$M_LOGS/clamav.txt"; error
-
-        # Add the ability to dictate the CA bundle file location when running freshclam.
-        cat "$M_PATCHES/clamav/"freshclam_cafile_option_01035.patch | patch -p1 --fuzz=100 --verbose &>> "$M_LOGS/clamav.txt"; error
-        
-        # Output the version number and not the git commit hash.
-        cat "$M_PATCHES/clamav/"version_0984.patch | patch -p1 --fuzz=100 --verbose &>> "$M_LOGS/clamav.txt"; error
-
-        # Fixes pattern matching and logic bugs in the clamd unit test, so we avoid check failures on some the affected platforms. 
-      	cat "$M_PATCHES/clamav/"check_clamd_fixes_01035.patch | patch -p1 --fuzz=100 --verbose &>> "$M_LOGS/clamav.txt"; error
-      	
-      # Applied to most recent version.
-      else
-        # Add the shutdown and clean up functions and fix the rar library dynamic loading logic.
-        cat "$M_PATCHES/clamav/"shutdown_rarload_01042.patch | patch -p1 --fuzz=100 --verbose &>> "$M_LOGS/clamav.txt"; error
-
-        # Add the ability to dictate the CA bundle file location when running freshclam.
-        cat "$M_PATCHES/clamav/"freshclam_cafile_option_01042.patch | patch -p1 --fuzz=100 --verbose &>> "$M_LOGS/clamav.txt"; error
-        
-        # Output the version number and not the git commit hash.
-        cat "$M_PATCHES/clamav/"version_0984.patch | patch -p1 --fuzz=100 --verbose &>> "$M_LOGS/clamav.txt"; error
-        
-        # These fixes may not be required with 0.104.2.
-        # Fixes pattern matching and logic bugs in the clamd unit test, so we avoid check failures on some the affected platforms. 
-      	# cat "$M_PATCHES/clamav/"check_clamd_fixes_01035.patch | patch -p1 --verbose &>> "$M_LOGS/clamav.txt"; error
-      fi
-
-      # Fix reference conflict with libpng over the filename png.h.
-      PNG_FILES=`grep --files-with-matches --recursive "png\\.h" *`; error
-      sed -i -e "s/png\.h/clpng\.h/g" $PNG_FILES; error
-      mv libclamav/png.h libclamav/clpng.h; error
-      unset PNG_FILES
-
+    clamav-extract|clamav-prep|clamav-check|clamav-check-full|clamav-clean)
+      printf "ClamAV is supplied by the system libclamav package (external dependency); nothing to do for %s.\n" "${1#clamav-}" &>> "$M_LOGS/clamav.txt"
     ;;
     clamav-build)
-      cd "$M_SOURCES/clamav"; error
-
-      if [ ! -f "$M_LDPATH"/libz.so ] || [ ! -f "$M_LDPATH"/libz.a ] || [ ! -f "$M_PKGPATH"/zlib.pc ]; then
-        [[ -t 0 ]] && ${TPUT} sgr0 || true; [[ -t 0 ]] && ${TPUT} setaf 3 || true; printf "\nPlease build zlib before clamav.\n"; [[ -t 0 ]] && ${TPUT} sgr0 || true
-        return 3
+      # Preflight: confirm the platform's libclamav development files are present, so a missing dependency
+      # fails here with an actionable message instead of an opaque link error during the combine stage.
+      printf "Using the system-provided libclamav (external dependency); verifying it is installed...\n" &>> "$M_LOGS/clamav.txt"
+      M_CLAMAV_HEADER=""
+      for d in /usr/include /usr/local/include; do
+        if [[ -f "$d/clamav.h" ]]; then M_CLAMAV_HEADER="$d/clamav.h"; break; fi
+      done
+      M_CLAMAV_LIB=""
+      for d in /usr/lib64 /usr/lib /usr/local/lib64 /usr/local/lib; do
+        if [[ -e "$d/libclamav.so" ]]; then M_CLAMAV_LIB="$d/libclamav.so"; break; fi
+      done
+      if [[ -z "$M_CLAMAV_HEADER" || -z "$M_CLAMAV_LIB" ]]; then
+        printf "\nThe system libclamav development files were not found.\n" | tee -a "$M_LOGS/clamav.txt"
+        printf "magma links its virus scanner from the platform's libclamav package.\n" | tee -a "$M_LOGS/clamav.txt"
+        printf "Install it before building, e.g. on RHEL/Rocky 9:  dnf install clamav clamav-lib clamav-devel\n\n" | tee -a "$M_LOGS/clamav.txt"
+        exit 1
       fi
-
-      if [ ! -f "$M_LDPATH"/libpcre2-8.so ] || [ ! -f "$M_LDPATH"/libpcre2-8.a ] || [ ! -f "$M_PKGPATH"/libpcre2-8.pc ]; then
-        [[ -t 0 ]] && ${TPUT} sgr0 || true; [[ -t 0 ]] && ${TPUT} setaf 3 || true; printf "\nPlease build pcre before pcre.\n"; [[ -t 0 ]] && ${TPUT} sgr0 || true
-        return 3
-      fi
-
-      if [ ! -f "$M_LDPATH"/libxml2.so ] || [ ! -f "$M_LDPATH"/libxml2.a ] || [ ! -f "$M_PKGPATH"/libxml-2.0.pc ]; then
-        [[ -t 0 ]] && ${TPUT} sgr0 || true; [[ -t 0 ]] && ${TPUT} setaf 3 || true; printf "\nPlease build xml2 before clamav.\n"; [[ -t 0 ]] && ${TPUT} sgr0 || true
-        return 3
-      fi
-
-      if [ ! -f "$M_LDPATH"/libbz2.so ] || [ ! -f "$M_LDPATH"/libbz2.a ]; then
-        [[ -t 0 ]] && ${TPUT} sgr0 || true; [[ -t 0 ]] && ${TPUT} setaf 3 || true; printf "\nPlease build bzip2 before clamav.\n"; [[ -t 0 ]] && ${TPUT} sgr0 || true
-        return 3
-      fi
-
-      export LDFLAGS="-L$M_LDPATH -Wl,-rpath,$M_LDPATH $M_LDFLAGS"
-      export CFLAGS="-fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 -DGNU_SOURCE $M_CFLAGS"
-      export CXXFLAGS="-fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 -DGNU_SOURCE $M_CXXFLAGS"
-      export CPPFLAGS="-fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 -DGNU_SOURCE $M_CPPFLAGS"
-
-      # The configuration used with 0.102.3 and below. 
-      # ./configure  \
-      #   --enable-check --enable-static --enable-shared --disable-llvm --disable-silent-rules --disable-clamonacc \
-			# 	--disable-clamsubmit --disable-clamdtop --disable-milter \
-      #   --with-openssl="$M_LOCAL" --with-zlib="$M_LOCAL" --with-xml="$M_LOCAL" --with-libcurl="$M_LOCAL" \
-      #   --with-pcre="$M_LOCAL" --with-systemdsystemunitdir="no" \
-      #   --with-libbz2-prefix="$M_LOCAL" --with-libcheck-prefix="$M_LOCAL" \
-      #   --prefix="$M_LOCAL" --exec-prefix="$M_LOCAL" --libdir="$M_LOCAL/lib" &>> "$M_LOGS/clamav.txt"; error
-
-      ./configure \
-        --with-openssl="$M_LOCAL" --with-zlib="$M_LOCAL" --with-xml="$M_LOCAL" --with-libcurl="$M_LOCAL" \
-        --with-pcre="$M_LOCAL" --with-libbz2-prefix="$M_LOCAL" --with-libcheck-prefix="$M_LOCAL" \
-        --enable-check --enable-static --enable-shared \
-        --disable-llvm --disable-silent-rules --disable-clamonacc --disable-clamsubmit --disable-clamdtop --disable-milter \
-        --with-systemdsystemunitdir="no" --with-system-libmspack="no" --with-included-ltdl="yes" \
-        --prefix="$M_LOCAL" --exec-prefix="$M_LOCAL" --libdir="$M_LOCAL/lib" &>> "$M_LOGS/clamav.txt"; error
-
-      unset CFLAGS; unset CXXFLAGS; unset CPPFLAGS; unset LDFLAGS
-
-      if [[ $CLAMAV =~ "clamav-0.9"[7-9]"."[1-9] ]]; then
-        # The check3_clamd.sh script will fail if LLVM is disabled.
-        # Since we are not currently using clamd, the offending check script is replaced.
-        # The exit value 77 indicates the check was skipped.
-        printf "\x23\x21/bin/bash\nexit 77\n" > "$M_SOURCES/clamav/unit_tests/check2_clamd.sh"; error
-        printf "\x23\x21/bin/bash\nexit 77\n" > "$M_SOURCES/clamav/unit_tests/check3_clamd.sh"; error
-        printf "\x23\x21/bin/bash\nexit 77\n" > "$M_SOURCES/clamav/unit_tests/check4_clamd.sh"; error
-      fi
-
-      make --jobs=${M_JOBS} &>> "$M_LOGS/clamav.txt"; error
-      make install &>> "$M_LOGS/clamav.txt"; error
-    ;;
-    clamav-check)
-      cd "$M_SOURCES/clamav"; error
-
-      # Remove read perms for the accdenied file so the test works properly.
-      if [[ -e "$M_SOURCES/clamav/unit_tests/accdenied" ]] && [[ ! -f "$M_SOURCES/clamav/unit_tests/accdenied" ]]; then
-        chmod --changes u-r "$M_SOURCES/clamav/unit_tests/accdenied" &>> "$M_LOGS/clamav.txt"; error
-      fi
-
-      # Increase the default test timeout to 20 minutes.
-      export T="1200"
-
-      make check &>> "$M_LOGS/clamav.txt"; error
-
-      unset T
-
-      # Add read perms to accdenied file so it can be checked into the version control repo.
-      if [[ -e "$M_SOURCES/clamav/unit_tests/accdenied" ]] && [[ ! -f "$M_SOURCES/clamav/unit_tests/accdenied" ]]; then
-        chmod --changes u+r "$M_SOURCES/clamav/unit_tests/accdenied" &>> "$M_LOGS/clamav.txt"; error
-      fi
-    ;;
-    clamav-check-full)
-      cd "$M_SOURCES/clamav"; error
-      export LD_LIBRARY_PATH="$M_LDPATH"; error
-      export PATH="$M_BNPATH:$PATH"; error
-
-      # Remove read perms for the accdenied file so the test works properly.
-      if [[ -e "$M_SOURCES/clamav/unit_tests/accdenied" ]] && [[ ! -f "$M_SOURCES/clamav/unit_tests/accdenied" ]]; then
-        chmod --changes u-r "$M_SOURCES/clamav/unit_tests/accdenied" &>> "$M_LOGS/clamav.txt"; error
-      fi
-
-      # Reset the session limits.
-      ulimit -f unlimited || ulimit -i 77233 || ulimit -l 64 || ulimit -m unlimited || ulimit -n 1024 || ulimit -q 819200 || ulimit -r 0 || ulimit -s 10240 || ulimit -c 0 || ulimit -d unlimited || ulimit -e 0 || ulimit -t unlimited || ulimit -u 77233 || ulimit -v unlimited || ulimit -x unlimited || ulimit -p 8
-
-      # Increase the default test timeout to 1 hour.
-      export T="3600"
-
-      make check VG=1 HG=1 &>> "$M_LOGS/clamav.txt"; error
-
-      unset T
-
-      # Add read permissions to accdenied file so it can be checked into the version control repo.
-      if [[ -e "$M_SOURCES/clamav/unit_tests/accdenied" ]] && [[ ! -f "$M_SOURCES/clamav/unit_tests/accdenied" ]]; then
-        chmod --changes u-r "$M_SOURCES/clamav/unit_tests/accdenied" &>> "$M_LOGS/clamav.txt"; error
-      fi
-    ;;
-    clamav-clean)
-      cd "$M_SOURCES/clamav"; error
-      make clean &>> "$M_LOGS/clamav.txt"; error
+      printf "Found clamav.h (%s) and libclamav.so (%s).\n" "$M_CLAMAV_HEADER" "$M_CLAMAV_LIB" &>> "$M_LOGS/clamav.txt"
     ;;
     clamav-tail)
       tail --lines=30 --follow=name --retry "$M_LOGS/clamav.txt"; error
@@ -1414,10 +1171,7 @@ clamav() {
       cat "$M_LOGS/clamav.txt"; error
     ;;
     clamav)
-      clamav "clamav-extract"
-      clamav "clamav-prep"
       clamav "clamav-build"
-      if [ "$QUICK" != "yes" ]; then clamav "clamav-check"; fi
     ;;
     *)
       printf "\nUnrecognized request.\n"
@@ -2460,12 +2214,6 @@ combine() {
     ! -f "$M_SOURCES/zlib/libz.a" || \
     ! -f "$M_SOURCES/bzip2/libbz2.a" || \
     ! -f "$M_SOURCES/mariadb/build/libmariadb/libmariadbclient.a" || \
-    ! -f "$M_SOURCES/geoip/libGeoIP/.libs/libGeoIP.a" || \
-    ! -f "$M_SOURCES/clamav/libclamav/.libs/libclamav.a" || \
-    ! -f "$M_SOURCES/clamav/libclamav/.libs/libclamunrar.a" || \
-    ! -f "$M_SOURCES/clamav/libclamav/.libs/libclamunrar_iface.a" || \
-    ! -f "$M_SOURCES/clamav/libclamav/.libs/libclammspack.a" || \
-    ! -f "$M_SOURCES/clamav/libltdl/.libs/libltdlc.a" || \
     ! -f "$M_SOURCES/openssl/libcrypto.a" || \
     ! -f "$M_SOURCES/openssl/libssl.a" || \
     ! -f "$M_SOURCES/jansson/src/.libs/libjansson.a" || \
@@ -2540,28 +2288,9 @@ combine() {
   cd "$M_OBJECTS/mariadb" &>> "$M_LOGS/combine.txt"; error
   ar xv "$M_SOURCES/mariadb/build/libmariadb/libmariadbclient.a" &>> "$M_LOGS/combine.txt"; error
 
-  rm -rf "$M_OBJECTS/geoip" &>> "$M_LOGS/combine.txt"; error
-  mkdir "$M_OBJECTS/geoip" &>> "$M_LOGS/combine.txt"; error
-  cd "$M_OBJECTS/geoip" &>> "$M_LOGS/combine.txt"; error
-  ar xv "$M_SOURCES/geoip/libGeoIP/.libs/libGeoIP.a" &>> "$M_LOGS/combine.txt"; error
-
-  rm -rf "$M_OBJECTS/clamav" &>> "$M_LOGS/combine.txt"; error
-  mkdir "$M_OBJECTS/clamav" &>> "$M_LOGS/combine.txt"; error
-  cd "$M_OBJECTS/clamav" &>> "$M_LOGS/combine.txt"; error
-  ar xv "$M_SOURCES/clamav/libclamav/.libs/libclamav.a" &>> "$M_LOGS/combine.txt"; error
-  ar xv "$M_SOURCES/clamav/libltdl/.libs/libltdlc.a" &>> "$M_LOGS/combine.txt"; error
-
-  mkdir "$M_OBJECTS/clamav/unrar" &>> "$M_LOGS/combine.txt"; error
-  cd "$M_OBJECTS/clamav/unrar" &>> "$M_LOGS/combine.txt"; error
-  ar xv "$M_SOURCES/clamav/libclamav/.libs/libclamunrar.a" &>> "$M_LOGS/combine.txt"; error
-
-  mkdir "$M_OBJECTS/clamav/unrar_iface" &>> "$M_LOGS/combine.txt"; error
-  cd "$M_OBJECTS/clamav/unrar_iface" &>> "$M_LOGS/combine.txt"; error
-  ar xv "$M_SOURCES/clamav/libclamav/.libs/libclamunrar_iface.a" &>> "$M_LOGS/combine.txt"; error
-
-  mkdir "$M_OBJECTS/clamav/mspack" &>> "$M_LOGS/combine.txt"; error
-  cd "$M_OBJECTS/clamav/mspack" &>> "$M_LOGS/combine.txt"; error
-  ar xv "$M_SOURCES/clamav/libclamav/.libs/libclammspack.a" &>> "$M_LOGS/combine.txt"; error
+  # ClamAV is not vendored: its symbols come from the platform's shared libclamav, linked into magmad.so
+  # as an external dependency (-lclamav) in the link step below, so there are no clamav objects to extract
+  # here. magma still resolves every cl_* entry point through dlsym at runtime.
 
   rm -rf "$M_OBJECTS/crypto" &>> "$M_LOGS/combine.txt"; error
   mkdir "$M_OBJECTS/crypto" &>> "$M_LOGS/combine.txt"; error
@@ -2605,13 +2334,14 @@ combine() {
     combine-static)
       # Commands for creating a static version of the library.
       rm -f "$M_AR"; error
+      # NOTE: ClamAV is an external shared library (the platform's libclamav) and cannot be embedded in
+      # this static archive; a consumer of magmad.a must link -lclamav separately. The shared object
+      # (magmad.so, built below) is magma's primary artifact and carries libclamav as a NEEDED dependency.
       ar rs "$M_AR" \
         "$M_OBJECTS"/lzo/*.o "$M_OBJECTS"/zlib/*.o \
         "$M_OBJECTS"/bzip2/*.o "$M_OBJECTS"/pcre/*.o \
-        "$M_OBJECTS"/clamav/*.o "$M_OBJECTS"/clamav/unrar/*.o \
-        "$M_OBJECTS"/clamav/unrar_iface/*.o "$M_OBJECTS"/clamav/mspack/*.o \
         "$M_OBJECTS"/tokyocabinet/*.o "$M_OBJECTS"/crypto/*.o "$M_OBJECTS"/ssl/*.o \
-        "$M_OBJECTS"/mariadb/*.o "$M_OBJECTS"/xml2/*.o "$M_OBJECTS"/spf2/*.o "$M_OBJECTS"/geoip/*.o \
+        "$M_OBJECTS"/mariadb/*.o "$M_OBJECTS"/xml2/*.o "$M_OBJECTS"/spf2/*.o \
         "$M_OBJECTS"/curl/*.o "$M_OBJECTS"/memcached/*.o "$M_OBJECTS"/utf8proc/*.o \
         "$M_OBJECTS"/png/*.o "$M_OBJECTS"/jpeg/*.o "$M_OBJECTS"/freetype/*.o "$M_OBJECTS"/gd/*.o \
         "$M_OBJECTS"/dkim/*.o "$M_OBJECTS"/jansson/*.o &>> "$M_LOGS/combine.txt"; error
@@ -2620,16 +2350,21 @@ combine() {
     ;;
     *)
       rm -f "$M_SO"
+      # ClamAV: the platform's shared libclamav is added as a NEEDED dependency rather than archived in.
+      # magmad.so's own objects never reference cl_* directly (magma resolves every clamav entry point via
+      # dlsym at runtime), so -lclamav is wrapped in --no-as-needed to force the DT_NEEDED entry; without
+      # it the linker would drop libclamav as unreferenced and the runtime dlsym lookups would fail. At
+      # startup magma dlopens magmad.so with RTLD_NOW|RTLD_GLOBAL, which loads libclamav and makes its
+      # symbols resolvable through the magmad.so handle exactly as the formerly-bundled copy was.
       gcc -Wl,-Bsymbolic -g3 -fPIC -rdynamic -shared -o "$M_SO" \
         "$M_OBJECTS"/lzo/*.o "$M_OBJECTS"/zlib/*.o \
         "$M_OBJECTS"/bzip2/*.o "$M_OBJECTS"/pcre/*.o \
-        "$M_OBJECTS"/clamav/*.o "$M_OBJECTS"/clamav/unrar/*.o \
-        "$M_OBJECTS"/clamav/unrar_iface/*.o "$M_OBJECTS"/clamav/mspack/*.o \
         "$M_OBJECTS"/tokyocabinet/*.o "$M_OBJECTS"/crypto/*.o "$M_OBJECTS"/ssl/*.o \
-        "$M_OBJECTS"/mariadb/*.o "$M_OBJECTS"/xml2/*.o "$M_OBJECTS"/spf2/*.o "$M_OBJECTS"/geoip/*.o \
+        "$M_OBJECTS"/mariadb/*.o "$M_OBJECTS"/xml2/*.o "$M_OBJECTS"/spf2/*.o \
         "$M_OBJECTS"/curl/*.o "$M_OBJECTS"/memcached/*.o "$M_OBJECTS"/utf8proc/*.o \
         "$M_OBJECTS"/png/*.o "$M_OBJECTS"/jpeg/*.o "$M_OBJECTS"/freetype/*.o "$M_OBJECTS"/gd/*.o \
         "$M_OBJECTS"/dkim/*.o "$M_OBJECTS"/jansson/*.o \
+        -Wl,--no-as-needed -lclamav -Wl,--as-needed \
         -lm -lrt -ldl -lbsd -lnsl -lwebp -ljson-c -lresolv -lpthread -lbrotlidec   -lstdc++ &>> "$M_LOGS/combine.txt"; error
 
       # This will update the time stamps for the various standalone dependencies, which should prevent make from rebuilding them.
@@ -2708,8 +2443,6 @@ load() {
   echo "return NULL;" >> magma.open.symbols.c; error
   echo "}" >> magma.open.symbols.c; error
 
-  ## Because GeoIPDBDescription is an array of pointers it doesn't need the leading ampersand.
-  # sed -i -e "s/GeoIPDBDescription_d = &GeoIPDBDescription;/GeoIPDBDescription_d = GeoIPDBDescription;/g" magma.open.symbols.c; error
 
   ## This function prototype is prefixed with a macro in parentheses which fools the default parsing rules.
   # sed -i -e "s/SSL_COMP)/SSL_COMP_get_compression_methods/g" magma.open.symbols.c; error
@@ -2721,13 +2454,13 @@ load() {
   # Compile the source files. If an error occurs at compile time it is probably because we have a mismatch somewhere.
   # Alternatively, we could use the syntax "-L$M_PROJECT_ROOT -l:magmad.so" ...
   gcc -D_REENTRANT -D_GNU_SOURCE -DHAVE_NS_TYPE -D_LARGEFILE64_SOURCE $M_SYM_INCLUDES \
-    -g3 -rdynamic -Wall -Wextra -Werror -Wno-deprecated-declarations -o magma.open.check magma.open.check.c magma.open.symbols.c $M_SO -ldl
+    -g3 -rdynamic -Wall -Wextra -Werror -Wno-deprecated-declarations -o magma.open.check magma.open.check.c magma.open.symbols.c $M_SO -lclamav -ldl
 
   # If errors are generated from invalid symbols, this should print out the specific lines that are invalid.
   if [ $? -ne 0 ]; then
 
     LNS=`gcc -D_REENTRANT -D_GNU_SOURCE -DHAVE_NS_TYPE -D_LARGEFILE64_SOURCE $M_SYM_INCLUDES -g3 -rdynamic -Wall -Wextra -Werror -Wno-deprecated-declarations \
-      -o magma.open.check magma.open.check.c magma.open.symbols.c $M_SO -ldl 2>&1 | grep "magma.open.symbols.c" | awk -F':' '{ print $2 }' | \
+      -o magma.open.check magma.open.check.c magma.open.symbols.c $M_SO -lclamav -ldl 2>&1 | grep "magma.open.symbols.c" | awk -F':' '{ print $2 }' | \
       grep "[0-9*]" | awk '{print $1 ", " }' | sort -gu | uniq | tr -d "\n" | sed "s/, $//g"`
 
     # Only output the symbol info we found lines to print.
@@ -2736,7 +2469,7 @@ load() {
       printf "\n\nPrinting the invalid symbols...\n\n"
 
       LNS=`gcc -D_REENTRANT -D_GNU_SOURCE -DHAVE_NS_TYPE -D_LARGEFILE64_SOURCE $M_SYM_INCLUDES -L$M_PROJECT_ROOT -l:magmad.so -g3 -rdynamic -Wall -Wextra -Werror -Wno-deprecated-declarations \
-        -o magma.open.check magma.open.check.c magma.open.symbols.c $M_SO -ldl 2>&1 | grep "magma.open.symbols.c" | awk -F':' '{ print $2 }' | \
+        -o magma.open.check magma.open.check.c magma.open.symbols.c $M_SO -lclamav -ldl 2>&1 | grep "magma.open.symbols.c" | awk -F':' '{ print $2 }' | \
         grep "[0-9*]" | awk '{print $1 "p;" }' | sort -gu | uniq | tr -d "\n"`
 
       cat magma.open.symbols.c | sed -n "$LNS" | sed "s/.*\&\(.*\)\;.*/\1/g" | sort | uniq
@@ -2826,7 +2559,6 @@ combo() {
     ($M_BUILD "png-$1") & PNG_PID=$!
     ($M_BUILD "xml2-$1") & XML2_PID=$!
     ($M_BUILD "openssl-$1") & OPENSSL_PID=$!
-    ($M_BUILD "geoip-$1") & GEOIP_PID=$!
 
     # These libraries require zlib (above) and openssl.
     wait $OPENSSL_PID; error
@@ -2864,7 +2596,6 @@ combo() {
     wait $LZO_PID; error
     wait $SPF2_PID; error
     wait $DKIM_PID; error
-    wait $GEOIP_PID; error
     wait $CLAMAV_PID; error
     wait $CHECKER_PID; error
     wait $GOOGTAP_PID; error
@@ -2891,7 +2622,6 @@ combo() {
     ($M_BUILD "dkim-$1") & DKIM_PID=$!
     ($M_BUILD "zlib-$1") & ZLIB_PID=$!
     ($M_BUILD "bzip2-$1") & BZIP2_PID=$!
-    ($M_BUILD "geoip-$1") & GEOIP_PID=$!
     ($M_BUILD "checker-$1") & CHECKER_PID=$!
     ($M_BUILD "openssl-$1") & OPENSSL_PID=$!
     ($M_BUILD "googtest-$1") & GOOGTEST_PID=$!
@@ -2914,7 +2644,6 @@ combo() {
     wait $ZLIB_PID; error
     wait $BZIP2_PID; error
     wait $MARIADB_PID; error
-    wait $GEOIP_PID; error
     wait $CLAMAV_PID; error
     wait $CHECKER_PID; error
     wait $OPENSSL_PID; error
@@ -2935,7 +2664,7 @@ combo() {
 follow() {
   # Note that the build.txt and combo.txt log files are intentionally excluded from this list because they don't belong to a bundled package file.
   tail -n 0 -F "$M_LOGS/clamav.txt" "$M_LOGS/curl.txt" "$M_LOGS/jansson.txt" "$M_LOGS/memcached.txt" "$M_LOGS/openssl.txt" \
-    "$M_LOGS/tokyocabinet.txt" "$M_LOGS/zlib.txt" "$M_LOGS/bzip2.txt" "$M_LOGS/dkim.txt" "$M_LOGS/geoip.txt" "$M_LOGS/lzo.txt" \
+    "$M_LOGS/tokyocabinet.txt" "$M_LOGS/zlib.txt" "$M_LOGS/bzip2.txt" "$M_LOGS/dkim.txt" "$M_LOGS/lzo.txt" \
     "$M_LOGS/mariadb.txt" "$M_LOGS/spf2.txt" "$M_LOGS/xml2.txt" "$M_LOGS/gd.txt" "$M_LOGS/png.txt" "$M_LOGS/jpeg.txt" "$M_LOGS/freetype.txt" \
     "$M_LOGS/utf8proc.txt" "$M_LOGS/checker.txt" "$M_LOGS/pcre.txt"
 }
@@ -2943,7 +2672,7 @@ follow() {
 log() {
   # Note that the build.txt and combo.txt log files are intentionally excluded from this list because they don't belong to a bundled package file.
   cat "$M_LOGS/clamav.txt" "$M_LOGS/curl.txt" "$M_LOGS/jansson.txt" "$M_LOGS/memcached.txt" "$M_LOGS/openssl.txt" \
-    "$M_LOGS/tokyocabinet.txt" "$M_LOGS/zlib.txt" "$M_LOGS/bzip2.txt" "$M_LOGS/dkim.txt" "$M_LOGS/geoip.txt" "$M_LOGS/lzo.txt" \
+    "$M_LOGS/tokyocabinet.txt" "$M_LOGS/zlib.txt" "$M_LOGS/bzip2.txt" "$M_LOGS/dkim.txt" "$M_LOGS/lzo.txt" \
     "$M_LOGS/mariadb.txt" "$M_LOGS/spf2.txt" "$M_LOGS/xml2.txt" "$M_LOGS/gd.txt" "$M_LOGS/png.txt" "$M_LOGS/jpeg.txt" "$M_LOGS/freetype.txt" \
     "$M_LOGS/utf8proc.txt" "$M_LOGS/checker.txt" "$M_LOGS/pcre.txt"
 }
@@ -3046,7 +2775,6 @@ elif [[ $1 =~ "xml2" ]]; then xml2 "$1"
 elif [[ $1 =~ "dkim" ]]; then dkim "$1"
 elif [[ $1 =~ "zlib" ]]; then zlib "$1"
 elif [[ $1 =~ "bzip2" ]]; then bzip2 "$1"
-elif [[ $1 =~ "geoip" ]]; then geoip "$1"
 elif [[ $1 =~ "clamav" ]]; then clamav "$1"
 elif [[ $1 =~ "mariadb" ]]; then mariadb "$1"
 elif [[ $1 =~ "checker" ]]; then checker "$1"
@@ -3076,7 +2804,7 @@ elif [[ $1 == "tail" ]]; then follow
 else
   echo ""
   echo " Libraries"
-  echo $"  `basename $0` {gd|png|lzo|pcre|jpeg|curl|spf2|xml2|dkim|zlib|bzip2|geoip|clamav|mariadb|checker|openssl|freetype|utf8proc|memcached|tokyocabinet} and/or "
+  echo $"  `basename $0` {gd|png|lzo|pcre|jpeg|curl|spf2|xml2|dkim|zlib|bzip2|clamav|mariadb|checker|openssl|freetype|utf8proc|memcached|tokyocabinet} and/or "
   echo ""
   echo " Stages (which may be combined via a dash with the above)"
   echo $"  `basename $0` {extract|prep|build|check|check-full|clean|tail|log} or "
