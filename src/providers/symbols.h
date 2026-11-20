@@ -659,7 +659,7 @@ extern xmlXPathContextPtr (*xmlXPathNewContext_d)(xmlDocPtr doc);
 extern const xmlChar * (*xmlBufferContent_d)(const xmlBuffer *buf);
 extern xmlNodePtr (*xmlNewNode_d)(xmlNsPtr ns, const xmlChar *name);
 extern xmlNodePtr (*xmlAddSibling_d)(xmlNodePtr cur, xmlNodePtr elem);
-extern void (*xmlNodeSetContent_d)(xmlNodePtr cur, const xmlChar *content);
+extern int (*xmlNodeSetContent_d)(xmlNodePtr cur, const xmlChar *content);
 extern int (*xmlNodeBufGetContent_d)(xmlBufferPtr buffer, const xmlNode *cur);
 extern xmlChar * (*xmlEncodeEntitiesReentrant_d)(xmlDocPtr doc, const xmlChar * input);
 extern void (*xmlDocDumpFormatMemory_d)(xmlDocPtr cur, xmlChar **mem, int *size, int format);

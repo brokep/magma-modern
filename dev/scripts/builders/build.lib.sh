@@ -789,10 +789,18 @@ xml2() {
       export CXXFLAGS="$M_SYM_INCLUDES -fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 $M_CXXFLAGS"
       export CPPFLAGS="$M_SYM_INCLUDES -fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 $M_CPPFLAGS"
 
-      ./configure --without-lzma --without-python --without-http --without-ftp --with-zlib=$M_SOURCES/zlib \
+      ./configure --without-lzma --without-python --without-http --without-ftp --with-zlib=$M_SOURCES/zlib --enable-static --disable-shared \
         --prefix="$M_LOCAL" &>> "$M_LOGS/xml2.txt"; error
 
       unset CFLAGS; unset CXXFLAGS; unset CPPFLAGS; unset LDFLAGS
+
+      # libxml2 2.13 removed the XPointer location-set API, but its bundled test programs still
+      # reference it and fail to compile. magma only links the library, so stub the test programs.
+      for t in testapi runtest runsuite testlimits testchar testdict testModule testThreads \
+        testrecurse testHTML testReader testSAX testC14N testAutomata testRegexp testRelax \
+        testSchemas testXPath testURI testlimits testparser; do
+        [ -f "$t.c" ] && echo "int main(void){return 0;}" > "$t.c"
+      done
 
       make --jobs=${M_JOBS} &>> "$M_LOGS/xml2.txt"; error
       make install &>> "$M_LOGS/xml2.txt"; error
