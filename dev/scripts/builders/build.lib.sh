@@ -156,9 +156,13 @@ gd() {
 
         # Of the patches above, these are the only ones still applicable to the 2.2.X series. They have
         # been updated, so an equivalent change is made to a 2.2.X release.
+        # These 2.2.5-era patches do not apply to 2.3.x (fixes are upstream); font paths are
+        # passed explicitly by magma, so the default-fontpath tweak is unneeded.
+        if [[ $GD == "libgd-2.2.5" ]]; then
         cat "$M_PATCHES/gd/"sparc_cflags_2.2.5.patch | patch -p1 --verbose &>> "$M_LOGS/gd.txt" ; error
         cat "$M_PATCHES/gd/"gd_gif_loop_2.2.5.patch | patch -p1 --verbose &>> "$M_LOGS/gd.txt" ; error
         cat "$M_PATCHES/gd/"default_fontpath_2.2.25.patch | patch -p1 --verbose &>> "$M_LOGS/gd.txt" ; error
+        fi
 
         # The bounding box patch is currently broken.
         # cat "$M_PATCHES/gd/"bounding_box_2.2.5.patch | patch -p1 --verbose &>> "$M_LOGS/gd.txt" ; error
@@ -2092,9 +2096,9 @@ utf8proc() {
         cat "$M_PATCHES/utf8proc/"utf8proc.release.version.patch | patch -p1 --verbose &>> "$M_LOGS/utf8proc.txt"; error
       fi
       
-      # For v2.3.0 and higher, we resurect the unifont download targets.
-      UTF8PROC_VERSION="`echo $UTF8PROC | sed \"s/utf8proc-//g\"`"
-      if [ `(echo 2.3.0; echo $UTF8PROC_VERSION) | sort -Vk3 | tail -1` != "2.3.0" ]; then
+      # The unifont download/regen targets (test data only) were patched in for the old 2.3.x-2.5.x
+      # pins; newer utf8proc changed data/Makefile and needs ruby to regen, so skip it.
+      if [[ $UTF8PROC == "utf8proc-2.5.0" ]]; then
         cat "$M_PATCHES/utf8proc/"unifont.download.patch | patch -p1 --verbose &>> "$M_LOGS/utf8proc.txt"; error
       fi
     ;;
@@ -2110,8 +2114,14 @@ utf8proc() {
 
       export CFLAGS="$M_SYM_INCLUDES -fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 $M_CFLAGS"
 
-      make prefix="$M_LOCAL" &>> "$M_LOGS/utf8proc.txt"; error
-      make prefix="$M_LOCAL" install &>> "$M_LOGS/utf8proc.txt"; error
+      # Newer utf8proc's install target has a prerequisite that downloads Unicode test data (needs
+      # ruby + network and fails behind a proxy/cert wall). magma only needs the static lib and the
+      # header, so build just the library and install those two artifacts by hand.
+      make prefix="$M_LOCAL" libutf8proc.a &>> "$M_LOGS/utf8proc.txt" || true
+      [ -f libutf8proc.a ] || { printf "\nutf8proc library was not built.\n"; return 1; }
+      install -m 644 libutf8proc.a "$M_LOCAL/lib/" &>> "$M_LOGS/utf8proc.txt"; error
+      install -m 644 utf8proc.h "$M_LOCAL/include/" &>> "$M_LOGS/utf8proc.txt"; error
+      [ -f libutf8proc.pc ] && install -m 644 libutf8proc.pc "$M_LOCAL/lib/pkgconfig/" &>> "$M_LOGS/utf8proc.txt" || true
 
       unset CFLAGS;
     ;;
@@ -2141,7 +2151,7 @@ utf8proc() {
       utf8proc "utf8proc-extract"
       utf8proc "utf8proc-prep"
       utf8proc "utf8proc-build"
-      utf8proc "utf8proc-check"
+      if [ "$QUICK" != "yes" ]; then utf8proc "utf8proc-check"; fi
     ;;
     *)
       printf "\nUnrecognized request.\n"

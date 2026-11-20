@@ -186,7 +186,7 @@ extern void * (*gdImageGifPtr_d)(gdImagePtr im, int *size);
 extern int (*gdImageColorResolve_d)(gdImagePtr im, int r, int g, int b);
 extern void * (*gdImageJpegPtr_d)(gdImagePtr im, int *size, int quality);
 extern void (*gdImageSetPixel_d)(gdImagePtr im, int x, int y, int color);
-extern char * (*gdImageStringFT_d)(gdImage * im, int *brect, int fg, char *fontlist, double ptsize, double angle, int x, int y, char *string);
+extern char * (*gdImageStringFT_d)(gdImage * im, int *brect, int fg, const char *fontlist, double ptsize, double angle, int x, int y, const char *string);
 
 //! JPEG
 extern const char * (*jpeg_version_d)(void);

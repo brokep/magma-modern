@@ -84,7 +84,7 @@ void * (*gdImageGifPtr_d)(gdImagePtr im, int *size) = NULL;
 int (*gdImageColorResolve_d)(gdImagePtr im, int r, int g, int b) = NULL;
 void * (*gdImageJpegPtr_d)(gdImagePtr im, int *size, int quality) = NULL;
 void (*gdImageSetPixel_d)(gdImagePtr im, int x, int y, int color) = NULL;
-char * (*gdImageStringFT_d)(gdImage * im, int *brect, int fg, char *fontlist, double ptsize, double angle, int x, int y, char *string) = NULL;
+char * (*gdImageStringFT_d)(gdImage * im, int *brect, int fg, const char *fontlist, double ptsize, double angle, int x, int y, const char *string) = NULL;
 
 //! JPEG
 const char * (*jpeg_version_d)(void) = NULL;
