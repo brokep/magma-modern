@@ -3,7 +3,7 @@
 GD="libgd-2.2.5"
 LZO="lzo-2.10"
 PNG="libpng-1.6.44"
-CURL="curl-7.70.0"
+CURL="curl-8.11.1"
 SPF2="libspf2-1.2.10"
 XML2="libxml2-2.9.10"
 DKIM="opendkim-2.10.3"

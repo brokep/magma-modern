@@ -644,7 +644,10 @@ curl() {
         cat "$M_PATCHES/curl/"7.23.1_curl_exec_perm_fix.patch | patch -p1 --verbose &>> "$M_LOGS/curl.txt"; error
         cat "$M_PATCHES/curl/"7.23.1_fix_ca_bundle_url.patch | patch -p1 --verbose &>> "$M_LOGS/curl.txt"; error  
      fi
+      # Test-skip patch, only relevant to 7.70.0 and unneeded with QUICK=yes.
+      if [[ $CURL == "curl-7.70.0" ]]; then
         cat "$M_PATCHES/curl/"7.70.0_skip_test_1541.patch | patch -p1 --verbose &>> "$M_LOGS/curl.txt"; error
+      fi
     ;;
     curl-build)
       # Note that if we don't include the debug configure option we can't run a check-full.
@@ -672,7 +675,7 @@ curl() {
 
       # We may want to enable libidn or libidn2 in the future.
      ./configure --enable-debug --enable-static=yes \
-        --without-libmetalink --without-libpsl --without-brotli --without-mesalink  \
+        --without-libpsl --without-brotli --without-zstd  \
         --without-wolfssl --without-bearssl --without-nss --without-mbedtls --without-gnutls \
         --without-nghttp2 --without-nghttp3 --without-quiche --without-ngtcp2 \
         --without-librtmp --without-krb4 --without-krb5 --without-libssh2 \
