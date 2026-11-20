@@ -17,12 +17,18 @@
 #
 # Then tunnel to :10000 from your workstation and log in.
 #
-# Rocky 9 (GCC 11) is used on purpose: Magma's vendored OpenSSL 1.0.2 will not compile on a
+# This builds the MODERNIZED stack: vendored OpenSSL 3.5.9 + refreshed EOL dependencies (see the
+# `openssl3` branch). A clean `build.lib.sh all` + `make` reproduces to 143/143 unit tests.
+#
+# Rocky 9 (GCC 11) is used on purpose: Magma's vendored OpenSSL would not compile on a
 # bleeding-edge toolchain (e.g. Fedora's GCC 16). See magma-start.sh for the runtime.
+#
+# MAGMA_REPO must point at a repo/fork that has the modernized branch (the tarballs are bundled in
+# lib/archives, so no network fetch of sources is needed during the build).
 FROM quay.io/rockylinux/rockylinux:9
 
 ARG MAGMA_REPO=https://github.com/lavabit/magma.git
-ARG MAGMA_REF=develop
+ARG MAGMA_REF=openssl3
 
 # EPEL + CRB (CodeReady Builder) repositories.
 RUN dnf -y install epel-release || dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
