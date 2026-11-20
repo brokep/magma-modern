@@ -294,9 +294,14 @@ png() {
       export CXXFLAGS="$M_SYM_INCLUDES -fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 $M_CXXFLAGS"
       export CPPFLAGS="$M_SYM_INCLUDES -fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 $M_CPPFLAGS"
 
-      ./configure --prefix="$M_LOCAL" --enable-shared=no &>> "$M_LOGS/png.txt"; error
+      ./configure --prefix="$M_LOCAL" &>> "$M_LOGS/png.txt"; error
 
       unset CFLAGS; unset CXXFLAGS; unset CPPFLAGS; unset LDFLAGS
+
+      # libpng 1.6.44 emits a malformed symbol version script (SYMBOL_PREFIX left unsubstituted) that
+      # breaks the shared-lib link. magma bundles only the static lib; the shared lib is needed just
+      # for downstream prerequisite checks, so drop the version script from the link.
+      sed -i -e "s/-Wl,--version-script=libpng.vers//g" Makefile &>> "$M_LOGS/png.txt"; error
 
       make --jobs=${M_JOBS} &>> "$M_LOGS/png.txt"; error
       make install &>> "$M_LOGS/png.txt"; error
@@ -793,7 +798,7 @@ xml2() {
       export CXXFLAGS="$M_SYM_INCLUDES -fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 $M_CXXFLAGS"
       export CPPFLAGS="$M_SYM_INCLUDES -fPIC -g3 -rdynamic -D_FORTIFY_SOURCE=2 $M_CPPFLAGS"
 
-      ./configure --without-lzma --without-python --without-http --without-ftp --with-zlib=$M_SOURCES/zlib --enable-static --disable-shared \
+      ./configure --without-lzma --without-python --without-http --without-ftp --with-zlib=$M_SOURCES/zlib --enable-static --enable-shared \
         --prefix="$M_LOCAL" &>> "$M_LOGS/xml2.txt"; error
 
       unset CFLAGS; unset CXXFLAGS; unset CPPFLAGS; unset LDFLAGS

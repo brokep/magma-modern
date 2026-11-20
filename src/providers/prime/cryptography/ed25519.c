@@ -6,7 +6,9 @@
  */
 
 #include "magma.h"
-#include <openssl/curve25519.h>
+// OpenSSL 3.x: curve25519.h came from the dropped 1.0.2 BoringSSL patch. Ed25519 is now provided
+// natively via EVP (EVP_PKEY_ED25519); see the EVP-based implementations below.
+// #include <openssl/curve25519.h>
 
 ed25519_key_type_t ed25519_type(ed25519_key_t *key) {
 	ed25519_key_type_t result = ED25519_ERR;
