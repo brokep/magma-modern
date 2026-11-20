@@ -1,0 +1,265 @@
+
+# =============================================================================
+# Magma production config TEMPLATE
+# -----------------------------------------------------------------------------
+# This is NOT a ready config. It is the sandbox config with every environment-
+# and secret-specific value replaced by a placeholder. Run gen-secrets.sh to
+# render a real config from it (it fills every token, generates the key files,
+# and emits the DB + DNS material):
+#
+#     ./gen-secrets.sh --domain example.com --config-prefix /etc/magma
+#
+# NEVER bake the rendered config or its key files into a container image.
+# Keep them in a secrets store / mounted volume. See HARDENING notes below.
+# =============================================================================
+
+# --- Anti-virus -------------------------------------------------------------
+magma.iface.virus.signatures = __VIRUS_SIGS__
+magma.iface.virus.available = true
+
+# --- Logging (prod: log to file, not just stdout) ---------------------------
+magma.output.file = true
+magma.output.path = __LOG_PATH__
+
+magma.log.content = false
+magma.log.file = true
+magma.log.function = true
+magma.log.http = false
+magma.log.imap = false
+magma.log.line = true
+magma.log.stack = false
+magma.log.time = true
+
+# --- Identity ---------------------------------------------------------------
+magma.system.domain = __DOMAIN__
+# Loopback relay is allowed to inject without auth. Keep it on the loopback
+# address ONLY; never widen this to a routable interface.
+magma.smtp.bypass_addr = 127.0.0.1
+
+magma.web.tls_redirect = __TLS_REDIRECT__
+magma.web.statistics = true
+
+# --- DIME (dark mail) keypair + org signet ----------------------------------
+magma.dime.key = __DIME_KEY__
+magma.dime.signet = __DIME_SIGNET__
+
+# --- DKIM: private key here, publish the .txt record in DNS -----------------
+magma.dkim.enabled = true
+magma.dkim.selector = __DKIM_SELECTOR__
+magma.dkim.domain = __DOMAIN__
+magma.dkim.key = __DKIM_KEY__
+
+# --- Secrets: MUST be unique per deployment AND distinct from each other ----
+magma.secure.memory.length = 65536
+magma.secure.salt = __SECURE_SALT__
+magma.secure.sessions = __SECURE_SESSIONS__
+
+# --- Web / HTTP -------------------------------------------------------------
+magma.http.close = true
+magma.web.portal.indent = false
+# Prod default: do NOT allow cross-domain unless a separate front-end needs it.
+magma.http.allow_cross_domain = false
+magma.config.output_config = false
+
+magma.admin.contact = __ADMIN_CONTACT__
+magma.admin.abuse = __ADMIN_ABUSE__
+
+# Prod: run in the background (the container start-script flips this if needed).
+magma.system.daemonize = true
+
+# --- Cache (memcached) ------------------------------------------------------
+magma.iface.cache.host[1].name = __CACHE_HOST__
+magma.iface.cache.host[1].port = __CACHE_PORT__
+
+# --- Web assets -------------------------------------------------------------
+magma.http.pages = __PAGES__
+magma.http.templates = __TEMPLATES__
+magma.http.fonts = __FONTS__
+
+# --- Database ---------------------------------------------------------------
+magma.iface.database.host = __DB_HOST__
+magma.iface.database.password = __DB_PASSWORD__
+magma.iface.database.pool.connections = 6
+magma.iface.database.schema = __DB_SCHEMA__
+magma.iface.database.socket_path = __DB_SOCKET__
+magma.iface.database.user = __DB_USER__
+
+# --- Shared object + storage ------------------------------------------------
+magma.library.file = __LIBRARY_FILE__
+magma.library.unload = false
+
+magma.spool = __SPOOL__
+magma.storage.tank = __STORAGE_TANK__
+magma.storage.root = __STORAGE_ROOT__
+magma.storage.default = local
+
+# --- System / resource hardening --------------------------------------------
+magma.system.enable_core_dumps = false
+magma.system.increase_resource_limits = true
+magma.system.worker_threads = 64
+# Prod: enable the portal safeguard.
+magma.web.portal.safeguard = true
+
+# --- Outbound relay (local Postfix smarthost, or a real relay) --------------
+magma.relay.timeout = 60
+magma.relay[1].name = __RELAY_HOST__
+magma.relay[1].port = __RELAY_PORT__
+
+# =============================================================================
+# Server listeners. Domain + TLS cert path are tokenized; everything else
+# (ports, protocols, v4/v6) matches the sandbox layout. Disable any listener
+# you don't expose by adding `magma.servers[N].enabled = false`.
+# =============================================================================
+
+magma.servers[1].name = __DOMAIN__ Molten
+magma.servers[1].domain = __DOMAIN__
+magma.servers[1].protocol = MOLTEN
+magma.servers[1].network.port = 6000
+
+magma.servers[2].name = __DOMAIN__ Molten
+magma.servers[2].domain = __DOMAIN__
+magma.servers[2].protocol = MOLTEN
+magma.servers[2].network.port = 6050
+magma.servers[2].network.ipv6 = true
+
+magma.servers[3].name = __DOMAIN__ SMTP
+magma.servers[3].domain = __DOMAIN__
+magma.servers[3].protocol = SMTP
+magma.servers[3].network.port = 7000
+magma.servers[3].tls.certificate = __TLS_CERT__
+
+magma.servers[4].name = __DOMAIN__ SMTP
+magma.servers[4].domain = __DOMAIN__
+magma.servers[4].protocol = SMTP
+magma.servers[4].network.port = 7050
+magma.servers[4].network.ipv6 = true
+magma.servers[4].tls.certificate = __TLS_CERT__
+
+magma.servers[5].name = __DOMAIN__ SMTPS
+magma.servers[5].domain = __DOMAIN__
+magma.servers[5].protocol = SMTP
+magma.servers[5].network.port = 7500
+magma.servers[5].network.type = TLS
+magma.servers[5].tls.certificate = __TLS_CERT__
+
+magma.servers[6].name = __DOMAIN__ DMTP
+magma.servers[6].domain = __DOMAIN__
+magma.servers[6].protocol = DMTP
+magma.servers[6].network.port = 7501
+magma.servers[6].network.type = TLS
+magma.servers[6].tls.certificate = __TLS_CERT__
+
+magma.servers[7].name = __DOMAIN__ SMTPS v6
+magma.servers[7].domain = __DOMAIN__
+magma.servers[7].protocol = SMTP
+magma.servers[7].network.port = 7550
+magma.servers[7].network.type = TLS
+magma.servers[7].network.ipv6 = true
+magma.servers[7].tls.certificate = __TLS_CERT__
+
+magma.servers[8].name = __DOMAIN__ DMTP v6
+magma.servers[8].domain = __DOMAIN__
+magma.servers[8].protocol = DMTP
+magma.servers[8].network.port = 7551
+magma.servers[8].network.type = TLS
+magma.servers[8].network.ipv6 = true
+magma.servers[8].tls.certificate = __TLS_CERT__
+
+magma.servers[9].name = __DOMAIN__ POP
+magma.servers[9].domain = __DOMAIN__
+magma.servers[9].protocol = POP
+magma.servers[9].network.port = 8000
+magma.servers[9].tls.certificate = __TLS_CERT__
+
+magma.servers[10].name = __DOMAIN__ POP
+magma.servers[10].domain = __DOMAIN__
+magma.servers[10].protocol = POP
+magma.servers[10].network.port = 8050
+magma.servers[10].network.ipv6 = true
+magma.servers[10].tls.certificate = __TLS_CERT__
+
+magma.servers[11].name = __DOMAIN__ POPS
+magma.servers[11].domain = __DOMAIN__
+magma.servers[11].protocol = POP
+magma.servers[11].network.port = 8500
+magma.servers[11].network.type = TLS
+magma.servers[11].tls.certificate = __TLS_CERT__
+
+magma.servers[12].name = __DOMAIN__ POPS
+magma.servers[12].domain = __DOMAIN__
+magma.servers[12].protocol = POP
+magma.servers[12].network.port = 8550
+magma.servers[12].network.ipv6 = true
+magma.servers[12].network.type = TLS
+magma.servers[12].tls.certificate = __TLS_CERT__
+
+magma.servers[13].name = __DOMAIN__ IMAP
+magma.servers[13].domain = __DOMAIN__
+magma.servers[13].protocol = IMAP
+magma.servers[13].network.port = 9000
+magma.servers[13].tls.certificate = __TLS_CERT__
+
+magma.servers[14].name = __DOMAIN__ IMAP
+magma.servers[14].domain = __DOMAIN__
+magma.servers[14].protocol = IMAP
+magma.servers[14].network.port = 9050
+magma.servers[14].network.ipv6 = true
+magma.servers[14].tls.certificate = __TLS_CERT__
+
+magma.servers[15].name = __DOMAIN__ IMAPS
+magma.servers[15].domain = __DOMAIN__
+magma.servers[15].protocol = IMAP
+magma.servers[15].network.port = 9500
+magma.servers[15].network.type = TLS
+magma.servers[15].tls.certificate = __TLS_CERT__
+
+magma.servers[16].name = __DOMAIN__ IMAPS
+magma.servers[16].domain = __DOMAIN__
+magma.servers[16].protocol = IMAP
+magma.servers[16].network.port = 9550
+magma.servers[16].network.ipv6 = true
+magma.servers[16].network.type = TLS
+magma.servers[16].tls.certificate = __TLS_CERT__
+
+magma.servers[17].name = __DOMAIN__ HTTP
+magma.servers[17].domain = __DOMAIN__
+magma.servers[17].protocol = HTTP
+magma.servers[17].network.port = 10000
+magma.servers[17].tls.certificate = __TLS_CERT__
+
+magma.servers[18].name = __DOMAIN__ HTTP
+magma.servers[18].domain = __DOMAIN__
+magma.servers[18].protocol = HTTP
+magma.servers[18].network.port = 10050
+magma.servers[18].network.ipv6 = true
+magma.servers[18].tls.certificate = __TLS_CERT__
+
+magma.servers[19].name = __DOMAIN__ HTTPS
+magma.servers[19].domain = __DOMAIN__
+magma.servers[19].protocol = HTTP
+magma.servers[19].network.port = 10500
+magma.servers[19].network.type = TLS
+magma.servers[19].tls.certificate = __TLS_CERT__
+
+magma.servers[20].name = __DOMAIN__ HTTPS
+magma.servers[20].domain = __DOMAIN__
+magma.servers[20].protocol = HTTP
+magma.servers[20].network.port = 10550
+magma.servers[20].network.ipv6 = true
+magma.servers[20].network.type = TLS
+magma.servers[20].tls.certificate = __TLS_CERT__
+magma.servers[20].enabled = false
+
+# =============================================================================
+# HARDENING CHECKLIST (not config keys — operator reminders)
+#   [ ] Secrets rendered by gen-secrets.sh, kept out of the image/VCS.
+#   [ ] TLS cert is CA-signed for __DOMAIN__ (+ mail.__DOMAIN__), not self-signed.
+#   [ ] DKIM TXT record published; SPF + DMARC records published.
+#   [ ] DB user is scoped (see grant.sql) — NOT "ALL PRIVILEGES WITH GRANT".
+#   [ ] Your real domains inserted into the Domains table (see domains.sql).
+#   [ ] Hosts table row matches this machine's hostname.
+#   [ ] MX + reverse DNS (PTR) for the mail host configured.
+#   [ ] DIME org key/signet are a magmad-compatible pair. This tree's 'signet' CLI can emit
+#       an incompatible signet; if magmad logs "Unable to parse the PRIME organizational
+#       signing key", regenerate with gen-secrets.sh --dime-copy-from <known-good dir>.
+# =============================================================================
