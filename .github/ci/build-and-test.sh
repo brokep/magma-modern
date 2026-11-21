@@ -40,7 +40,7 @@ echo "::endgroup::"
 
 echo "::group::Build (build.lib.sh all)"
 NSS_DISABLE_HW_AES=1 QUICK=yes M_JOBS="$(nproc)" dev/scripts/builders/build.lib.sh all
-echo "OpenSSL linked into magmad.so: $(strings magmad.so | grep -m1 'OpenSSL ' || echo '??')"
+echo "OpenSSL linked into magmad.so: $(strings magmad.so | grep -m1 -oE 'OpenSSL [0-9][^ ]*' || echo '??')"
 echo "::endgroup::"
 
 echo "::group::Build (make all)"
