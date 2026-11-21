@@ -1,34 +1,38 @@
 # Containerfile - reproducible Magma (lavabit) build + runtime on Rocky 9.
 #
-#   podman build -t magma:dev -f Containerfile .
+#   podman build -t magma:port -f Containerfile .
 #
 # One image, two run modes (magma-start.sh picks based on what's mounted at /etc/magma):
 #
 #   # SANDBOX (demo): baked config, login magma / password
-#   podman run -d --name magma --ulimit memlock=-1:-1 --ulimit nofile=65536:65536 magma:dev
+#   podman run -d --name magma --ulimit memlock=-1:-1 --ulimit nofile=65536:65536 magma:port
 #
 #   # PROD: mount a rendered config + secrets (see gen-secrets.sh) read-only at /etc/magma.
 #   #   ./gen-secrets.sh --domain example.com --config-prefix /etc/magma \
 #   #       --install-root /root/magma --data-root /root/magma/sandbox
 #   podman run -d --name magma --ulimit memlock=-1:-1 --ulimit nofile=65536:65536 \
-#       -v ./secrets/example.com:/etc/magma:ro magma:dev
+#       -v ./secrets/example.com:/etc/magma:ro magma:port
 #   # Any /etc/magma/*.config wins over the baked sandbox config; grant.sql / domains.sql /
 #   # seed.sql there are applied too. Set -e MAGMA_SEED_DEMO=0 to skip the demo accounts.
 #
 # Then tunnel to :10000 from your workstation and log in.
 #
-# This builds the MODERNIZED stack: vendored OpenSSL 3.5.9 + refreshed EOL dependencies (see the
-# `openssl3` branch). A clean `build.lib.sh all` + `make` reproduces to 143/143 unit tests.
+# This builds the `openssl3-port` branch: the vendored OpenSSL 1.0.2u -> 3.5.9 (LTS) port plus the
+# packed-session-lock futex fix, on top of upstream develop. Every OTHER dependency keeps its
+# original pin (ClamAV 0.103.6, GeoIP 1.4.8, curl 7.70, libxml2 2.9.10, zlib 1.2.11, ...), all still
+# vendored and bundled in lib/archives, so the build needs no network fetch of sources. This is the
+# branch proposed upstream in lavabit/magma#164; a clean `build.lib.sh all` + `make` reaches 143/143
+# unit tests. (For the fully refreshed EOL dependency stack + system libclamav, build the `openssl3`
+# branch instead -- set MAGMA_REF=openssl3 and add the clamav* packages back to the dnf line below.)
 #
 # Rocky 9 (GCC 11) is used on purpose: Magma's vendored OpenSSL would not compile on a
 # bleeding-edge toolchain (e.g. Fedora's GCC 16). See magma-start.sh for the runtime.
 #
-# MAGMA_REPO must point at a repo/fork that has the modernized branch (the tarballs are bundled in
-# lib/archives, so no network fetch of sources is needed during the build).
+# MAGMA_REPO defaults to the fork that carries the branch. Override both ARGs to build elsewhere.
 FROM quay.io/rockylinux/rockylinux:9
 
-ARG MAGMA_REPO=https://github.com/lavabit/magma.git
-ARG MAGMA_REF=openssl3
+ARG MAGMA_REPO=https://github.com/brokep/magma-modern.git
+ARG MAGMA_REF=openssl3-port
 
 # EPEL + CRB (CodeReady Builder) repositories.
 RUN dnf -y install epel-release || dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
@@ -36,10 +40,10 @@ RUN dnf -y install dnf-plugins-core && (dnf config-manager --set-enabled crb || 
 
 # Build + runtime dependencies. The libnsl2-devel/libwebp-devel/json-c-devel/brotli-devel line is the
 # gap vs. robox's rocky9 list: without it the final magmad.so link fails with "ld: cannot find -lnsl /
-# -lwebp / -ljson-c / -lbrotlidec". The clamav line supplies the virus scanner: magma no longer vendors
-# ClamAV (modern ClamAV needs a Rust toolchain to build), so it links the platform's prebuilt libclamav
-# instead -- clamav-devel provides clamav.h and libclamav.so for the build, clamav-lib the runtime
-# library, and clamav-freshclam the signature updater used by dev/scripts/freshen/freshen.clamav.sh.
+# -lwebp / -ljson-c / -lbrotlidec". This branch still VENDORS ClamAV (0.103.6, which predates ClamAV's
+# mandatory Rust toolchain), so no clamav* system packages are needed -- libclamav is compiled from
+# lib/archives and linked statically, exactly as upstream has always done. (libtool-ltdl-devel below is
+# what that vendored ClamAV needs for libltdl.)
 RUN dnf -y install \
       autoconf automake bison byacc cmake cpp cscope ctags diffstat elfutils expect flex gcc gcc-c++ gdb \
       gettext glibc-devel glibc-headers indent intltool jq kernel-headers libarchive libbsd libbsd-devel \
@@ -49,7 +53,6 @@ RUN dnf -y install \
       pkgconfig procps python3 swig texinfo unzip valgrind valgrind-devel wget zip zlib-devel m4 rsync git \
       inotify-tools haveged mariadb-server mariadb memcached postfix \
       libnsl2-devel libwebp-devel json-c-devel brotli-devel \
-      clamav clamav-lib clamav-devel clamav-freshclam \
     && dnf clean all
 
 # Point the MySQL client at the same socket Magma uses.
