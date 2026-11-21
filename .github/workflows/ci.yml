@@ -1,0 +1,45 @@
+name: build-and-test
+
+# Builds the vendored dependency stack (incl. OpenSSL 3.5.9) and runs the full 143-test
+# unit suite in a Rocky 9 container, matching the Containerfile. Rocky 9 / GCC 11 is used
+# on purpose: Magma's vendored crypto will not compile on a bleeding-edge toolchain.
+
+on:
+  push:
+    branches: [ openssl3 ]
+    paths-ignore: [ '**.md' ]
+  pull_request:
+    branches: [ openssl3 ]
+    paths-ignore: [ '**.md' ]
+  workflow_dispatch:
+
+# One in-flight run per branch; a newer push cancels the older run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Free up runner disk space
+        # The full vendored build tree is ~13 GB; the stock runner root partition is tight.
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+                      /usr/local/lib/android /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Build and test in Rocky 9
+        run: |
+          docker run --rm \
+            --ulimit memlock=-1:-1 --ulimit nofile=65536:65536 \
+            -v "${{ github.workspace }}":/src -w /src \
+            quay.io/rockylinux/rockylinux:9 \
+            bash /src/.github/ci/build-and-test.sh
