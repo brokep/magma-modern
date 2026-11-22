@@ -1673,18 +1673,21 @@ jansson() {
     ;;
     jansson-prep)
       cd "$M_SOURCES/jansson"; error
+      # magma's four custom jansson patches, ported to 2.14 and applied in order:
+      #   version         - jansson_version() as a resolvable (non-macro) symbol
+      #   inlines         - un-inline the refcount/wrapper helpers magma binds via dlsym
+      #   optional-params - the magma 'S' pack/unpack format (NULL <-> JSON null)
+      #   typeof-string   - json_type_string(), the type name logged by the Portal
+      # (The old sphinx and error-text-length patches are obsolete on 2.14 and dropped:
+      #  2.14 bounds the error buffer with snprintf, and the Sphinx 1.0 doc build is gone.)
+      echo "$M_PATCHES/jansson/"jansson-version.patch &>> "$M_LOGS/jansson.txt"; error
       cat "$M_PATCHES/jansson/"jansson-version.patch | patch -p1 --batch &>> "$M_LOGS/jansson.txt"; error
-      if [ -e "/usr/bin/sphinx-1.0-build" ]; then
-        cat "$M_PATCHES/jansson/"jansson-sphinx.patch | patch -p3 --batch &>> "$M_LOGS/jansson.txt"; error
-      fi
       echo "$M_PATCHES/jansson/"jansson-inlines.patch &>> "$M_LOGS/jansson.txt"; error
       cat "$M_PATCHES/jansson/"jansson-inlines.patch | patch -p1 --batch &>> "$M_LOGS/jansson.txt"; error
       echo "$M_PATCHES/jansson/"jansson-optional-params.patch &>> "$M_LOGS/jansson.txt"; error
       cat "$M_PATCHES/jansson/"jansson-optional-params.patch | patch -p1 --batch &>> "$M_LOGS/jansson.txt"; error
       echo "$M_PATCHES/jansson/"jansson-typeof-string.patch &>> "$M_LOGS/jansson.txt"; error
       cat "$M_PATCHES/jansson/"jansson-typeof-string.patch | patch -p1 --batch  &>> "$M_LOGS/jansson.txt"; error
-      echo "$M_PATCHES/jansson/"jansson-error-text-length.patch &>> "$M_LOGS/jansson.txt"; error
-      cat "$M_PATCHES/jansson/"jansson-error-text-length.patch | patch -p1 --batch  &>> "$M_LOGS/jansson.txt"; error
     ;;
     jansson-build)
       cd "$M_SOURCES/jansson"; error

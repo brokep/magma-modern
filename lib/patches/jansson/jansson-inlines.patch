@@ -1,137 +1,126 @@
-diff -r 6195942587b5 jansson/src/jansson.h
---- jansson/src/jansson.h	Fri Apr 29 18:42:11 2011 -0500
-+++ jansson.b/src/jansson.h	Sat Apr 30 19:14:07 2011 -0500
-@@ -86,24 +86,12 @@ json_t *json_true(void);
- json_t *json_false(void);
- json_t *json_null(void);
-
--static JSON_INLINE
--json_t *json_incref(json_t *json)
--{
--    if(json && json->refcount != (size_t)-1)
--        ++json->refcount;
+diff --git a/src/jansson.h b/src/jansson.h
+index 4b67154..659f87f 100644
+--- a/src/jansson.h
++++ b/src/jansson.h
+@@ -122,19 +122,13 @@ json_t *json_null(void);
+ #define JSON_INTERNAL_DECREF(json) (--json->refcount)
+ #endif
+ 
+-static JSON_INLINE json_t *json_incref(json_t *json) {
+-    if (json && json->refcount != (size_t)-1)
+-        JSON_INTERNAL_INCREF(json);
 -    return json;
 -}
++/* magma: real (non-inline) symbols; definitions live in value.c. */
 +json_t *json_incref(json_t *json);
-
+ 
  /* do not call json_delete directly */
  void json_delete(json_t *json);
-
--static JSON_INLINE
--void json_decref(json_t *json)
--{
--    if(json && json->refcount != (size_t)-1 && --json->refcount == 0)
+ 
+-static JSON_INLINE void json_decref(json_t *json) {
+-    if (json && json->refcount != (size_t)-1 && JSON_INTERNAL_DECREF(json) == 0)
 -        json_delete(json);
 -}
--
 +void json_decref(json_t *json);
-
- /* error reporting */
-
-@@ -135,23 +123,10 @@ const char *json_object_iter_key(void *i
- json_t *json_object_iter_value(void *iter);
- int json_object_iter_set_new(json_t *object, void *iter, json_t *value);
-
--static JSON_INLINE
--int json_object_set(json_t *object, const char *key, json_t *value)
--{
+ 
+ #if defined(__GNUC__) || defined(__clang__)
+ static JSON_INLINE void json_decrefp(json_t **json) {
+@@ -248,28 +242,21 @@ int json_object_iter_set_new(json_t *object, void *iter, json_t *value);
+          index < json_array_size(array) && (value = json_array_get(array, index));       \
+          index++)
+ 
+-static JSON_INLINE int json_object_set(json_t *object, const char *key, json_t *value) {
 -    return json_object_set_new(object, key, json_incref(value));
 -}
-
--static JSON_INLINE
--int json_object_set_nocheck(json_t *object, const char *key, json_t *value)
--{
++int json_object_set(json_t *object, const char *key, json_t *value);
+ 
+ static JSON_INLINE int json_object_setn(json_t *object, const char *key, size_t key_len,
+                                         json_t *value) {
+     return json_object_setn_new(object, key, key_len, json_incref(value));
+ }
+ 
+-static JSON_INLINE int json_object_set_nocheck(json_t *object, const char *key,
+-                                               json_t *value) {
 -    return json_object_set_new_nocheck(object, key, json_incref(value));
 -}
--
--static JSON_INLINE
--int json_object_iter_set(json_t *object, void *iter, json_t *value)
--{
++int json_object_set_nocheck(json_t *object, const char *key, json_t *value);
+ 
+ static JSON_INLINE int json_object_setn_nocheck(json_t *object, const char *key,
+                                                 size_t key_len, json_t *value) {
+     return json_object_setn_new_nocheck(object, key, key_len, json_incref(value));
+ }
+ 
+-static JSON_INLINE int json_object_iter_set(json_t *object, void *iter, json_t *value) {
 -    return json_object_iter_set_new(object, iter, json_incref(value));
 -}
-+int json_object_set(json_t *object, const char *key, json_t *value);
-+int json_object_set_nocheck(json_t *object, const char *key, json_t *value);
 +int json_object_iter_set(json_t *object, void *iter, json_t *value);
-
- size_t json_array_size(const json_t *array);
- json_t *json_array_get(const json_t *array, size_t index);
-@@ -162,23 +137,9 @@ int json_array_remove(json_t *array, siz
+ 
+ static JSON_INLINE int json_object_update_new(json_t *object, json_t *other) {
+     int ret = json_object_update(object, other);
+@@ -299,17 +286,11 @@ int json_array_remove(json_t *array, size_t index);
  int json_array_clear(json_t *array);
  int json_array_extend(json_t *array, json_t *other);
-
--static JSON_INLINE
--int json_array_set(json_t *array, size_t index, json_t *value)
--{
--    return json_array_set_new(array, index, json_incref(value));
+ 
+-static JSON_INLINE int json_array_set(json_t *array, size_t ind, json_t *value) {
+-    return json_array_set_new(array, ind, json_incref(value));
 -}
--
--static JSON_INLINE
--int json_array_append(json_t *array, json_t *value)
--{
++int json_array_set(json_t *array, size_t ind, json_t *value);
+ 
+-static JSON_INLINE int json_array_append(json_t *array, json_t *value) {
 -    return json_array_append_new(array, json_incref(value));
 -}
--
--static JSON_INLINE
--int json_array_insert(json_t *array, size_t index, json_t *value)
--{
--    return json_array_insert_new(array, index, json_incref(value));
--}
-+int json_array_set(json_t *array, size_t index, json_t *value);
 +int json_array_append(json_t *array, json_t *value);
-+int json_array_insert(json_t *array, size_t index, json_t *value);
-
+ 
+-static JSON_INLINE int json_array_insert(json_t *array, size_t ind, json_t *value) {
+-    return json_array_insert_new(array, ind, json_incref(value));
+-}
++int json_array_insert(json_t *array, size_t ind, json_t *value);
+ 
  const char *json_string_value(const json_t *string);
- json_int_t json_integer_value(const json_t *integer);
-diff -r 6195942587b5 jansson/src/value.c
---- jansson/src/value.c	Fri Apr 29 18:42:11 2011 -0500
-+++ jansson.b/src/value.c	Sat Apr 30 19:14:07 2011 -0500
-@@ -978,3 +978,49 @@ json_t *json_deep_copy(json_t *json)
-
-     return NULL;
+ size_t json_string_length(const json_t *string);
+diff --git a/src/value.c b/src/value.c
+index 07af087..f210cb8 100644
+--- a/src/value.c
++++ b/src/value.c
+@@ -1110,3 +1110,41 @@ json_t *do_deep_copy(const json_t *json, hashtable_t *parents) {
+             return NULL;
+     }
  }
 +
-+json_t *json_incref(json_t *json)
-+{
-+    if(json && json->refcount != (size_t)-1)
-+        ++json->refcount;
++/* magma: non-inline definitions of the wrappers un-inlined in jansson.h, so
++   they are exported from libjansson and resolvable via dlsym. Behaviour is
++   identical to the stock inline versions. */
++json_t *json_incref(json_t *json) {
++    if (json && json->refcount != (size_t)-1)
++        JSON_INTERNAL_INCREF(json);
 +    return json;
 +}
 +
-+void json_decref(json_t *json)
-+{
-+    if(json && json->refcount != (size_t)-1 && --json->refcount == 0)
++void json_decref(json_t *json) {
++    if (json && json->refcount != (size_t)-1 && JSON_INTERNAL_DECREF(json) == 0)
 +        json_delete(json);
 +}
 +
-+int json_object_set(json_t *object, const char *key, json_t *value)
-+{
++int json_object_set(json_t *object, const char *key, json_t *value) {
 +    return json_object_set_new(object, key, json_incref(value));
 +}
 +
-+
-+int json_object_set_nocheck(json_t *object, const char *key, json_t *value)
-+{
++int json_object_set_nocheck(json_t *object, const char *key, json_t *value) {
 +    return json_object_set_new_nocheck(object, key, json_incref(value));
 +}
 +
-+
-+int json_object_iter_set(json_t *object, void *iter, json_t *value)
-+{
++int json_object_iter_set(json_t *object, void *iter, json_t *value) {
 +    return json_object_iter_set_new(object, iter, json_incref(value));
 +}
 +
-+int json_array_set(json_t *array, size_t index, json_t *value)
-+{
-+    return json_array_set_new(array, index, json_incref(value));
++int json_array_set(json_t *array, size_t ind, json_t *value) {
++    return json_array_set_new(array, ind, json_incref(value));
 +}
 +
-+int json_array_append(json_t *array, json_t *value)
-+{
++int json_array_append(json_t *array, json_t *value) {
 +    return json_array_append_new(array, json_incref(value));
 +}
 +
-+int json_array_insert(json_t *array, size_t index, json_t *value)
-+{
-+    return json_array_insert_new(array, index, json_incref(value));
++int json_array_insert(json_t *array, size_t ind, json_t *value) {
++    return json_array_insert_new(array, ind, json_incref(value));
 +}
-+

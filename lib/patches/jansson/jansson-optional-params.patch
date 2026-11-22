@@ -1,18 +1,21 @@
-diff -r 3f63684f1ed2 jansson/src/pack_unpack.c
---- jansson/src/pack_unpack.c	Sat Apr 30 21:18:38 2011 -0500
-+++ jansson.b/src/pack_unpack.c	Fri May 06 12:03:06 2011 -0500
-@@ -191,6 +191,19 @@ static json_t *pack(scanner_t *s, va_lis
-             return json_string_nocheck(str);
-         }
+diff --git a/src/pack_unpack.c b/src/pack_unpack.c
+index 04c116e..ddecad4 100644
+--- a/src/pack_unpack.c
++++ b/src/pack_unpack.c
+@@ -431,6 +431,21 @@ static json_t *pack(scanner_t *s, va_list *ap) {
+         case 's': /* string */
+             return pack_string(s, ap);
  
-+        case 'S': /* optional string, NULL inputs are replaced with a json null value */
++        case 'S': /* magma: optional string; a NULL argument packs a JSON null */
 +        {
 +            const char *str = va_arg(*ap, const char *);
-+            if(!str) {
++            size_t len;
++            if (!str)
 +                return json_null();
-+            }
-+            if(!utf8_check_string(str, -1)) {
-+                set_error(s, "<args>", "Invalid UTF-8 string");
++            len = strlen(str);
++            if (!utf8_check_string(str, len)) {
++                set_error(s, "<args>", json_error_invalid_utf8, "Invalid UTF-8 string");
++                s->has_error = 1;
 +                return NULL;
 +            }
 +            return json_string_nocheck(str);
@@ -21,36 +24,32 @@ diff -r 3f63684f1ed2 jansson/src/pack_unpack.c
          case 'n': /* null */
              return json_null();
  
-@@ -402,6 +415,32 @@ static int unpack(scanner_t *s, json_t *
+@@ -712,6 +727,28 @@ static int unpack(scanner_t *s, json_t *root, va_list *ap) {
              }
              return 0;
  
-+        case 'S':
-+            if(!json_is_string(root) && !json_is_null(root)) {
-+                set_error(s, "<validation>", "Expected string or null, got %s",
-+                          type_name(root));
++        case 'S': /* magma: string or null; a JSON null yields a NULL char* */
++            if (root && !json_is_string(root) && !json_is_null(root)) {
++                set_error(s, "<validation>", json_error_wrong_type,
++                          "Expected string or null, got %s", type_name(root));
 +                return -1;
 +            }
 +
-+            if(!(s->flags & JSON_VALIDATE_ONLY)) {
-+                const char **str;
-+
-+                str = va_arg(*ap, const char **);
-+                if(!str) {
-+                    set_error(s, "<args>", "NULL string argument");
++            if (!(s->flags & JSON_VALIDATE_ONLY)) {
++                const char **str_target = va_arg(*ap, const char **);
++                if (!str_target) {
++                    set_error(s, "<args>", json_error_null_value, "NULL string argument");
 +                    return -1;
 +                }
-+
-+                if (json_is_null(root)) {
-+                	*str = NULL;
++                if (root) {
++                    if (json_is_null(root))
++                        *str_target = NULL;
++                    else
++                        *str_target = json_string_value(root);
 +                }
-+                else {
-+                	*str = json_string_value(root);
-+                }
-+
 +            }
 +            return 0;
 +
          case 'i':
-             if(!json_is_integer(root)) {
-                 set_error(s, "<validation>", "Expected integer, got %s",
+             if (root && !json_is_integer(root)) {
+                 set_error(s, "<validation>", json_error_wrong_type,
