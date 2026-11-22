@@ -1,11 +1,18 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <dlfcn.h>
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
+#include "core/core.h"
 
 #include <dime/common/misc.h>
 #include <dime/signet/keys.h>
 #include <dime/signet/signet.h>
 
+#include "prime/prime.h"
 #include "symbols.h"
 bool lib_load_openssl(void);
 bool lib_load_utf8proc(void);
@@ -47,6 +54,7 @@ static void usage(const char *progname) {
 	fprintf(stderr, "  --ssr     |-r   Specifies the SSR filename to be signed.\n");
 	fprintf(stderr, "  --custody |-c   Specifies the custody keys filename used to create the user signet's chain of custody signature.\n");
 	fprintf(stderr, "  --examine |-x   Lists all field types for the specified signet type (user, org, ssr).\n");
+	fprintf(stderr, "  --prime-org|-P  Generates a PRIME organizational key + self-signed signet (the format magmad loads) for the given domain; writes <domain>.key (mode 600) and <domain>.signet, or the -k / -o filenames.\n");
 	fprintf(stderr, "  --help    |-h   Help, currently limited to this usage message.\n");
 }
 
@@ -446,9 +454,103 @@ static void examine_signet(signet_type_t type) {
 
 }
 
+/**
+ * @brief	Generate a PRIME organizational key and its self-signed signet, written as
+ *		PEM-armored files in the exact format magmad loads (magma.dime.key /
+ *		magma.dime.signet).
+ *
+ *		This is distinct from the DIME --generate path: that path emits the older
+ *		DIME signet format, whose organizational signing key field magmad's PRIME
+ *		parser rejects (it reads a 32-byte ed25519 public key, the DIME format
+ *		supplies 33). The key and signet produced here round-trip through magmad's
+ *		prime_set()/org_signet_set() and boot a live daemon.
+ * @param	domain		optional organizational domain, used only to derive the default
+ *				output filenames (<domain>.key and <domain>.signet).
+ * @param	signet_file	preferred signet output filename, or NULL to derive it from the domain.
+ * @param	key_file	preferred key output filename, or NULL to derive it from the domain.
+ */
+static void generate_prime_org(const char *domain, const char *signet_file, const char *key_file) {
+
+	FILE *fp = NULL;
+	prime_t *key = NULL, *signet = NULL;
+	stringer_t *key_pem = NULL, *signet_pem = NULL;
+	char *kf = NULL, *sf = NULL;
+	int kf_alloc = 0, sf_alloc = 0;
+
+	// Resolve the output filenames: an explicit -o/-k wins, otherwise derive from the domain.
+	if (signet_file) {
+		sf = (char *)signet_file;
+	}
+	else if (domain && str_printf(&sf, "%s.signet", domain) >= 0) {
+		sf_alloc = 1;
+	}
+
+	if (key_file) {
+		kf = (char *)key_file;
+	}
+	else if (domain && str_printf(&kf, "%s.key", domain) >= 0) {
+		kf_alloc = 1;
+	}
+
+	if (!sf || !kf) {
+		fprintf(stderr, "A domain (or both -o and -k output files) is required to generate a PRIME org signet.\n");
+		exit(EXIT_FAILURE);
+	}
+
+	// Generate the organizational key and its self-signed signet.
+	if (!(key = prime_key_generate(PRIME_ORG_KEY, NONE))) {
+		fprintf(stderr, "Unable to generate the PRIME organizational key.\n");
+		exit(EXIT_FAILURE);
+	}
+	else if (!(signet = prime_signet_generate(key))) {
+		fprintf(stderr, "Unable to generate the PRIME organizational signet.\n");
+		prime_free(key);
+		exit(EXIT_FAILURE);
+	}
+
+	// Serialize both as PEM-armored objects (the encoding magmad's prime_set() expects).
+	else if (!(key_pem = prime_get(key, ARMORED, NULL)) || !(signet_pem = prime_get(signet, ARMORED, NULL))) {
+		fprintf(stderr, "Unable to serialize the PRIME organizational key or signet.\n");
+		st_cleanup(key_pem);
+		st_cleanup(signet_pem);
+		prime_free(signet);
+		prime_free(key);
+		exit(EXIT_FAILURE);
+	}
+
+	// Write the private key first and lock it down to mode 600 (magmad refuses a world-accessible key).
+	if (!(fp = fopen(kf, "wb")) || fwrite(st_char_get(key_pem), 1, st_length_get(key_pem), fp) != st_length_get(key_pem)) {
+		fprintf(stderr, "Unable to write the organizational key file. { path = %s }\n", kf);
+		exit(EXIT_FAILURE);
+	}
+	fclose(fp);
+	if (chmod(kf, S_IRUSR | S_IWUSR)) {
+		fprintf(stderr, "Warning: unable to restrict permissions on %s; chmod 600 it before use.\n", kf);
+	}
+
+	// Then write the public signet.
+	if (!(fp = fopen(sf, "wb")) || fwrite(st_char_get(signet_pem), 1, st_length_get(signet_pem), fp) != st_length_get(signet_pem)) {
+		fprintf(stderr, "Unable to write the organizational signet file. { path = %s }\n", sf);
+		exit(EXIT_FAILURE);
+	}
+	fclose(fp);
+
+	fprintf(stdout, "PRIME organizational key written to:    %s (mode 600)\n", kf);
+	fprintf(stdout, "PRIME organizational signet written to: %s\n", sf);
+
+	st_cleanup(key_pem);
+	st_cleanup(signet_pem);
+	prime_free(signet);
+	prime_free(key);
+	if (sf_alloc) free(sf);
+	if (kf_alloc) free(kf);
+
+	return;
+}
+
 int main(int argc, char **argv) {
 
-	char *signet_id = NULL, *dump_file = NULL, *out_file = NULL, *ssr_file = NULL, *keys_file = NULL, *custody_file = NULL, *examine_type = NULL;
+	char *signet_id = NULL, *dump_file = NULL, *out_file = NULL, *ssr_file = NULL, *keys_file = NULL, *custody_file = NULL, *examine_type = NULL, *prime_org_id = NULL;
 	int is_help = 0, opt, opt_index = 0;
 
 	typedef enum {
@@ -456,6 +558,7 @@ int main(int argc, char **argv) {
 		DUMP,
 		SIGN,
 		EXAMINE,
+		PRIME_ORG,
 		NONE
 	} COMMAND_T;
 	COMMAND_T command = NONE;
@@ -479,6 +582,8 @@ int main(int argc, char **argv) {
 		}, {
 			"examine", required_argument, NULL, 'x'
 		}, {
+			"prime-org", required_argument, NULL, 'P'
+		}, {
 			"help", no_argument, NULL, 'h'
 		}, {
 			0, 0, 0, 0
@@ -490,7 +595,7 @@ int main(int argc, char **argv) {
 		return 0;
 	}
 
-	while ((opt = getopt_long(argc, argv, "g:s:d:o:k:r:c:x:h", long_options, &opt_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, "g:s:d:o:k:r:c:x:P:h", long_options, &opt_index)) != -1) {
 
 		switch (opt) {
 
@@ -576,6 +681,17 @@ int main(int argc, char **argv) {
 
 			examine_type = optarg;
 			command = EXAMINE;
+			break;
+		case 'P':
+
+			if (command != NONE) {
+				fprintf(stderr, "Conflicting options (generate, sign, dump, prime-org)\n");
+				usage(argv[0]);
+				return 0;
+			}
+
+			prime_org_id = optarg;
+			command = PRIME_ORG;
 			break;
 		case 'h':
 			is_help = 1;
@@ -681,6 +797,10 @@ int main(int argc, char **argv) {
 		}
 
 		examine_signet(type);
+		break;
+	case PRIME_ORG:
+
+		generate_prime_org(prime_org_id, out_file, keys_file);
 		break;
 	default:
 		fprintf(stderr, "Invalid command specified. This tool can be used to generate (-g), sign (-s) and dump (-d) signets.\n");

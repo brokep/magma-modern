@@ -17,10 +17,10 @@
 #                                               (default: /etc/magma)
 #   --selector <s>         DKIM selector        (default: mail)
 #   --csr                  emit a CSR for a real CA instead of self-signing TLS
-#   --dime                 mint the DIME org signet with the tree's signet CLI (NOTE: some
-#                          magmad builds reject its output; see the warning it prints)
+#   --dime                 mint a fresh PRIME org key + signet with 'signet --prime-org'
+#                          (the format magmad loads; needs a built signet binary)
 #   --dime-copy-from <d>   reuse an existing org key+signet pair from dir/file <d> instead
-#                          (e.g. sandbox/etc/dime.* for a bootable demo) — most reliable
+#                          (e.g. sandbox/etc/dime.* for a bootable demo)
 #   --install-root <p>     magmad.so + res/ assets (default: /opt/magma)
 #   --data-root <p>        spool/storage/virus    (default: /var/lib/magma)
 #   --log-path <p>         log dir                (default: /var/log/magma/)
@@ -169,17 +169,19 @@ elif [ "$DO_DIME" = "yes" ]; then
     [ -x "$c" ] && SIGNET_BIN="$c" && break
   done
   if [ -n "$SIGNET_BIN" ]; then
-    echo ">> DIME: $SIGNET_BIN -g $DOMAIN"
-    printf '\n\n\n\n\n\n\n\n' | "$SIGNET_BIN" -g "$DOMAIN" -o "$OUT/$DIME_SIGNET" -k "$OUT/$DIME_KEY" >/dev/null 2>&1 || \
-      "$SIGNET_BIN" -g "$DOMAIN" -o "$OUT/$DIME_SIGNET" -k "$OUT/$DIME_KEY" || \
-      echo "   !! signet generation failed"
-    [ -f "$OUT/$DIME_KEY" ] && chmod 600 "$OUT/$DIME_KEY"
-    echo "   !! WARNING: this tree's 'signet' CLI emits an org signet some magmad builds REJECT"
-    echo "      (PRIME field-length drift: field 1 is 33 bytes, magmad wants 32). If magmad logs"
-    echo "      'Unable to parse the PRIME organizational signing key', supply a known-good pair"
-    echo "      with --dime-copy-from <dir> instead (sandbox/etc/dime.* works for a demo)."
+    # Mint a PRIME organizational key + self-signed signet with the signet tool's --prime-org
+    # mode. Unlike the legacy DIME -g path, this emits the PRIME format magmad actually loads
+    # (org_signet_set: a 32-byte ed25519 signing key in field 1), so the pair boots a live daemon.
+    echo ">> DIME: $SIGNET_BIN --prime-org $DOMAIN"
+    if "$SIGNET_BIN" --prime-org "$DOMAIN" -o "$OUT/$DIME_SIGNET" -k "$OUT/$DIME_KEY"; then
+      [ -f "$OUT/$DIME_KEY" ] && chmod 600 "$OUT/$DIME_KEY"
+      echo "   minted a PRIME org key + signet magmad accepts ($DIME_KEY / $DIME_SIGNET)"
+    else
+      echo "   !! PRIME org signet generation failed; fall back to --dime-copy-from <dir> (sandbox/etc/dime.* works)"
+    fi
   else
     echo ">> DIME: no built signet binary found (looked for ./signet, ./tools/signet/signet) — skipping."
+    echo "   build magma first (make all), or reuse a pair with --dime-copy-from <dir>."
   fi
 else
   echo ">> DIME: skipped (pass --dime to mint, or --dime-copy-from <dir> to reuse a known-good pair)"
