@@ -1,189 +1,140 @@
-# Description
+# Magma (modernized)
 
-Magma was originally designed and developed by Ladar Levison for lavabit.com. The current release is currently under heavy development, and some of the features and functions contained herein are unstable. The SMTP, POP, and IMAP protocol handlers are reasonably mature. The DMTP, DMAP and HTTP implementations (along with the bundled webmail system) are still in development. Happy hacking.
+Magma is the encrypted mail server originally designed and developed by Ladar
+Levison for lavabit.com. It speaks SMTP, POP and IMAP (mature), plus the DMTP,
+DMAP and HTTP/JSON-RPC interfaces and the bundled webmail portal.
 
-# Downloads
+This fork is a **modernization** of the upstream [`lavabit/magma`](https://github.com/lavabit/magma)
+`develop` branch. The goal is a server that builds, tests and runs cleanly on a
+current, security-patched toolchain instead of the long-EOL dependency stack the
+original pinned. The protocol behaviour, on-disk formats and wire formats are
+unchanged; the suite is **143/143** on every supported branch.
 
-##### Magma
+## What's modernized
 
-https://github.com/lavabit/magma/archive/develop.tar.gz
+- **Vendored OpenSSL 1.0.2u → 3.5.9** (the 3.5 LTS series). The original pinned an
+  OpenSSL that reached end-of-life in 2019. See the commit history and
+  [lavabit/magma#164](https://github.com/lavabit/magma/pull/164) for the port.
+- **Every other EOL dependency refreshed:** zlib 1.3.1, curl 8.11.1, libxml2
+  2.13.5, pcre2 10.44, freetype 2.13.3, libpng 1.6.44, jpeg 9f, libgd 2.3.3,
+  utf8proc 2.9.0, mariadb-connector-c 3.3.13, and **jansson 2.14** — the stack now
+  carries no end-of-life libraries.
+- **ClamAV is consumed from the platform's shared `libclamav`** rather than
+  vendored. Modern ClamAV (0.105+) requires a Rust toolchain to build from source;
+  linking the distribution package keeps the scanner security-patched through the
+  normal system update channel and keeps Rust out of magma's build. (The
+  `openssl3-port` PR branch still vendors ClamAV 0.103.6, the last pre-Rust
+  release, so it builds with no system ClamAV.)
+- **Legacy GeoIP dropped.** Nothing in magma ever called the discontinued legacy
+  GeoIP API; it was dead weight linked into `magmad.so`.
+- **A remotely-triggerable futex/alignment DoS fixed** (a packed `session_t` left
+  its `pthread_mutex_t` on an odd offset; glibc 2.34 aborts the daemon on the
+  contended `futex()`). Submitted upstream as
+  [lavabit/magma#163](https://github.com/lavabit/magma/pull/163).
+- **Continuous integration:** every push builds the full vendored stack and runs
+  the complete 143-test unit suite in a Rocky 9 container (GitHub Actions).
 
-##### Magma Development Machine, v1.0.0
+## Quick start (container)
 
-The development machine is a pre-built virtual machine with a graphical desktop and various development tools, and dependencies installed.
-
-https://darkmail.info/downloads/dark-mail-development-machine-1.0.0.tar.gz    
-https://darkmail.info/downloads/dark-mail-development-machine-1.0.0.tar.gz.sha256    
-
-33808e4ed81859cb076ae879fed7ad85164a2561a1b1cd96f66f65f7e3bf7bd7
-
-##### Magma Build Machines
-
-For those looking for a slim virtual machine pre-configured to build and run magma, consider the following Vagrant boxes which have been created specifically for that purpose. Images have been created to support the VirtualBox, Hyper-V, VMware, and libvirt Vagrant providers. An official Docker image is on the roadmap, but for the time being you might want to consider one of the community supported images. Use the appropriate command below to download and provision a Vagrant instance.
-
-```shell
-# VMware
-vagrant init lavabit/magma; vagrant up --provider vmware_desktop
-
-# VirtualBox
-vagrant init lavabit/magma; vagrant up --provider virtualbox
-
-# libvirt
-vagrant init lavabit/magma; vagrant up --provider libvirt
-
-# Hyper-V
-vagrant init lavabit/magma; vagrant up --provider hyperv
-```
-
-Images are available for alternate platforms [here](https://app.vagrantup.com/lavabit).
-
-# Credits
-
-- Ladar Levison
-- Greg Brown
-- Ivan Tolkachev
-- Princess Levison
-- Ryan Crites
-- Sean Benson
-- Stephen Watt
-- Jacob Adkins
-
-And the army of Kickstarter supporters who contributed to this project.
-
-# Tarball Contents
-
-```
-magma/
-	check/
-	dev/
-		docs/
-		scripts/
-		tools/
-			cryptex/
-			mason/
-			pwtool/
-			rand/
-			runner/
-			stringer/
-			testde/
-	lib/
-	res/
-	sandbox/
-	src/
-	web/
-	COPYRIGHT
-	INSTALL
-	LICENSE
-	Makefile
-	README.md
-```
-
-# Installation Instructions
-
-These instructions are targeted at systems running CentOS 6.
-
-### Prerequisites
-
-Install the dependencies (make sure that EPEL is enabled):
+The fastest way to build and run magma is the bundled `Containerfile`, which
+produces a reproducible Rocky 9 image with everything vendored — no network fetch
+of sources at build time.
 
 ```shell
-yum -y install gcc make autoconf automake binutils bison flex gcc-c++ gettext libtool make patch pkgconfig mysql-server memcached gettext-devel patch perl perl-Time-HiRes check check-devel ncurses-devel libbsd-devel zlib-devel valgrind valgrind-devel clamav clamav-lib clamav-devel
+# Build the image (defaults to the modernized openssl3-port branch).
+podman build -t magma:port -f Containerfile .
+
+# Run the sandbox demo (login: magma / password). The memlock ulimit is
+# required — magma's secure-memory (mlock) allocator needs it.
+podman run -d --name magma \
+    --ulimit memlock=-1:-1 --ulimit nofile=65536:65536 \
+    magma:port
 ```
 
-> **Note on ClamAV:** magma no longer vendors and compiles ClamAV from source.
-> Modern ClamAV (0.105 and later, including the 1.x LTS lines) requires a Rust
-> toolchain to build, so instead the virus scanner is consumed as the platform's
-> prebuilt, security-patched shared `libclamav`: the `clamav-devel` headers and
-> `libclamav.so` are needed at build time, and the `clamav-lib` runtime library at
-> run time. On RHEL/Rocky 9 these come from EPEL (`dnf install clamav clamav-lib
-> clamav-devel`). magma links `libclamav` into `magmad.so` as an external dependency
-> and resolves every ClamAV entry point via `dlsym` at runtime, as it always has.
-> Keeping the scanner on the distribution package means security updates arrive
-> through the normal system update channel rather than a magma rebuild.
-
-**MySQL**
-
-To start MySQL and configure the magma username run the commands below. The supplied password should be replaced with value unique to your environment. You may also want to limit the permissions of the magma database user to the database it will need to access. The global permission is only needed to setup the table schema.
+Then tunnel to the webmail portal and log in:
 
 ```shell
-chkconfig mysqld on && service mysqld start
-
-echo "CREATE USER 'magma'@'localhost' IDENTIFIED BY 'volcano';" | mysql -u root
-echo "GRANT ALL PRIVILEGES ON *.* TO 'magma'@'localhost' WITH GRANT OPTION;" | mysql -u root
+# from your workstation
+ssh -L 10000:<container-ip>:10000 <docker-host>
+# open http://localhost:10000  (magma / password)
 ```
 
-**Memcached**
+For a real deployment, render a config and secrets with `gen-secrets.sh` and
+mount them read-only at `/etc/magma` — see the header of `Containerfile` and
+`magma-start.sh` for the one-image/two-modes (sandbox vs. prod) runtime.
 
-To start Memcached run the commands below.
+> **Why Rocky 9 (GCC 11)?** Magma's vendored crypto will not compile on a
+> bleeding-edge toolchain (e.g. Fedora's GCC 16). Rocky 9 is the known-good
+> build environment; the container pins it so the host distribution doesn't
+> matter.
+
+## Building from source
+
+Magma vendors and statically links its dependencies into `magmad.so`, resolving
+each entry point via `dlsym` at runtime. A from-scratch build on **Rocky / RHEL 9**
+(or a `rockylinux:9` container) looks like this:
 
 ```shell
-chkconfig memcached on && service memcached start
+# Enable EPEL + CRB (CodeReady Builder), which carry several of the -devel packages.
+dnf -y install epel-release dnf-plugins-core
+dnf config-manager --set-enabled crb
+
+# Install the build + runtime dependencies. The Containerfile's dnf line is the
+# complete, tested list; the non-obvious pieces beyond a typical toolchain are:
+#   libnsl2-devel libwebp-devel json-c-devel brotli-devel  (final magmad.so link)
+#   libtool-ltdl-devel                                      (vendored libltdl users)
+#   clamav clamav-lib clamav-devel                          (system libclamav, see above)
+#   mariadb-server mariadb memcached postfix                (to run the test suite)
+
+# Build the vendored dependencies (-> magmad.so), then the daemon and tools.
+NSS_DISABLE_HW_AES=1 QUICK=yes M_JOBS="$(nproc)" dev/scripts/builders/build.lib.sh all
+NSS_DISABLE_HW_AES=1 make -j"$(nproc)" all
 ```
-### Compiling (The Short Way)
+
+`build.lib.sh` run without arguments lists its sub-targets (`extract`, `prep`,
+`build`, `combine`, `keys`, `all`, per-library targets, …). The bundled `Makefile`
+builds `magmad` and `magmad.check`; it will run the dependency step automatically
+if the expected headers are missing.
+
+### Running the unit tests
+
+The suite needs MariaDB, memcached and (for the SMTP send-path tests) a Postfix
+relay on `127.0.0.1:2525`:
 
 ```shell
-make all
+# MariaDB: user 'mytool' / password 'aComplex1', socket /var/lib/mysql/mysql.sock,
+#          started with --sql-mode=ALLOW_INVALID_DATES
+# Then load the sandbox schema and seed the AV signatures:
+MYSQL_USER=mytool MYSQL_PASSWORD=aComplex1 MYSQL_SCHEMA=Sandbox \
+    dev/scripts/database/schema.reset.sh
+cp -f dev/virus/*.cvd sandbox/virus/     # sandbox/virus/ ships empty
+
+NSS_DISABLE_HW_AES=1 dev/scripts/launch/check.run.sh
 ```
 
-### Compiling (The Long Way)
+`.github/ci/build-and-test.sh` performs exactly this sequence end-to-end and is
+runnable by hand in a `rockylinux:9` container; it is the authoritative build +
+test recipe.
 
-To link up the development and build scripts run the linkup.sh. This will create a bin folder in your home directory, if it doesn't already exist, and create symbolic links to the scripts and tools used to build, run and test magma. The commands below assume the bin directory is in your PATH. If it isn't, or you simply don't want to create the symbolic links, you can also run the shell scripts directly from their location in the dev/scripts folder. To execute the linkup.sh script:
+## Credits
 
-```shell
-magma/dev/scripts/linkup.sh
-```
+Magma was created by Ladar Levison and the Lavabit team, with contributions from
+Greg Brown, Ivan Tolkachev, Princess Levison, Ryan Crites, Sean Benson, Stephen
+Watt and Jacob Adkins — and the army of Kickstarter supporters who funded the
+project. This fork builds on their work; all original copyright and licensing
+(see `LICENSE` and `COPYRIGHT`) is unchanged.
 
-To build the dependencies and create the magmad.so library separately, run the build.lib script. Run the script without any parameters to see the possible command line options. To compile and combine all of dependencies in a single operation:
+## Development
 
-```shell
-build.lib all
-```
+The best way to get an issue fixed is a pull request with a unit test in the
+`check/` folder that reproduces it. Please run the Valgrind harnesses
+(`check.vg`, `magma.vg`) before submitting, to catch memory leaks and invalid
+memory operations.
 
-The bundled Makefile can be used to compile magma. It will detect when the dependencies haven't been compiled and run the preceeding step automatically, if necessary, as the Makefile looks for required header files in folders created by the previous step. If the Makefile has trouble finding the necessary include files, odds are its because the previous step didn't run properly. Assuming the dependencies are available, you can compile magmad and magmad.check using:
+## Webmail
 
-```shell
-build.magma
-build.check
-```
-
-To setup a sandbox database which can be used to run the unit tests, or experiment with magma, run (assuming the development userid is setup with permission to your database):
-
-```shell
-schema.reset
-```
-
-To launch the magma unit tests, or magma using the sandbox configuration, run:
-
-```shell
-check.run
-magma.run
-```
-
-To download the ClamAV virus definitions into the sandbox environment, run:
-
-```shell
-freshen.clamav
-```
-
-### Deploying
-
-To deploy magma, run the INSTALL script. Note the INSTALL script is out of date, and will need to tweaking to operate perfectly against a copy of the current magma development branch cloned directly via git. Pull requests welcome.
-
-```shell
-./INSTALL -d ~/ -u magma -p volcano -s Lavabit
-```
-
-### Development
-
-The best way to get an issue fixed is to create a pull request with a unit test added to the check folder which reproduces the issue and checks for the expected output. In general, please be sure to run the check.vg and magma.vg scripts before creating a pull request to make sure the newly submitted code doesn't introduce a memory leak, or invalid memory operation.
-
-
-# Webmail
-
-Inside the res/pages/webmail directory is a compiled copy of the webmail code. Locate script.js file and change the magma.portalUrl = true variable to false, and it will use a set of hard coded test requests/responses. These hard coded requests, and responses are useful for checking/developing the webmail code without a running version of the magma server. Currently the files are configured to access the JSON-RPC interface using the hostname "localhost" and the HTTP port 10000. This should work using the default magma.config and magma.sandbox.config files.
-
-The static files inside the res/pages/webmail folder are compiled using the files inside the web directory. See the web/WORKFLOW.md file for details.
-
-
-
-
+A compiled copy of the webmail portal lives in `res/pages/webmail`. Set
+`magma.portalUrl = false` in its `script.js` to use the hard-coded test
+request/response fixtures (useful for developing the portal without a running
+server). The static files are compiled from the sources in `web/` — see
+`web/WORKFLOW.md`.
