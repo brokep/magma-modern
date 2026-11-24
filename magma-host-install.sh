@@ -34,6 +34,9 @@
 #   --install-dir <p>   where source/scripts live (default /opt/magma)
 #   --config-dir <p>    where secrets/config live (default /etc/magma)
 #   --service <n>       systemd service name (default magma)
+#   --admin-bind <ip>   /admin panel bind address (default 127.0.0.1, loopback)
+#   --admin-port <n>    /admin panel port (default 8080)
+#   --no-admin          don't install the /admin web control panel
 #   --no-build          reuse --image; don't build (image must exist)
 #   --no-firewall       don't touch the firewall; print what to open instead
 #   --no-start          install the unit but don't start it
@@ -50,6 +53,7 @@ LE_EMAIL="${MAGMA_LE_EMAIL:-}"
 IMAGE="magma:local" REF="openssl3" REPO="https://github.com/brokep/magma-modern.git"
 INSTALL_DIR="/opt/magma" CONFIG_DIR="/etc/magma" SERVICE="magma"
 DO_BUILD="yes" DO_FIREWALL="yes" DO_START="yes" DRY="no" ASSUME_YES="no"
+DO_ADMIN="yes" ADMIN_BIND="127.0.0.1" ADMIN_PORT="8080"
 
 PORT_MAP=( "25:7000" "587:7000" "465:7500" "110:8000" "995:8500"
            "143:9000" "993:9500" "80:10000" "443:10500" )
@@ -87,6 +91,9 @@ while [ $# -gt 0 ]; do
     --install-dir) INSTALL_DIR="$2"; shift 2;;
     --config-dir)  CONFIG_DIR="$2"; shift 2;;
     --service)     SERVICE="$2"; shift 2;;
+    --admin-bind)  ADMIN_BIND="$2"; shift 2;;
+    --admin-port)  ADMIN_PORT="$2"; shift 2;;
+    --no-admin)    DO_ADMIN="no"; shift;;
     --no-build)    DO_BUILD="no"; shift;;
     --no-firewall) DO_FIREWALL="no"; shift;;
     --no-start)    DO_START="no"; shift;;
@@ -105,6 +112,8 @@ command -v systemctl >/dev/null 2>&1 || die "systemd (systemctl) not found — t
 CNAME="$SERVICE"                       # container name == service name
 SECRETS_DIR="$CONFIG_DIR/$DOMAIN"      # host path; mounted read-only at /etc/magma in the container
 UNIT="/etc/systemd/system/$SERVICE.service"
+ADMIN_SERVICE="$SERVICE-admin"         # the /admin web panel runs as its own unit
+ADMIN_UNIT="/etc/systemd/system/$ADMIN_SERVICE.service"
 
 # distro / package manager
 PKG=""; for p in dnf apt-get yum zypper apk; do command -v "$p" >/dev/null 2>&1 && { PKG="$p"; break; }; done
@@ -131,7 +140,7 @@ fi
 
 # ----------------------------------------------------- 1. prerequisites ------
 say "installing prerequisites (podman + tools)"
-PKGS_COMMON="podman git openssl curl"
+PKGS_COMMON="podman git openssl curl python3"   # python3 runs the /admin panel
 case "$PKG" in
   dnf|yum)   run "$PKG" -y install $PKGS_COMMON certbot bind-utils      || warn "some packages failed to install";;
   apt-get)   run env DEBIAN_FRONTEND=noninteractive "$PKG" update -qq || true
@@ -282,6 +291,9 @@ MAGMA_CONTAINER=$CNAME
 MAGMA_IMAGE=$IMAGE
 MAGMA_INSTALL_DIR=$INSTALL_DIR
 MAGMA_PODMAN=$PODMAN
+MAGMA_ADMIN_SERVICE=$ADMIN_SERVICE
+MAGMA_ADMIN_BIND=$ADMIN_BIND
+MAGMA_ADMIN_PORT=$ADMIN_PORT
 "
 if [ "$DRY" = yes ]; then printf '   %s[dry-run]%s would write %s/magma.conf\n' "$c_yel" "$c_0" "$CONFIG_DIR"
 else printf '%s' "$CONF_CONTENT" > "$CONFIG_DIR/magma.conf"; chmod 600 "$CONFIG_DIR/magma.conf"; fi
@@ -293,6 +305,44 @@ if [ -f "$SRC/magma-ctl.sh" ]; then
   ok "run 'magma status' / 'magma restart' / 'magma logs' anytime"
 else
   warn "magma-ctl.sh not found in $SRC — skipping the 'magma' command"
+fi
+
+# ------------------------------------------------- 9b. /admin web panel ------
+# A single-file Python (stdlib) control panel, run as its own systemd unit.
+# Loopback-bound by default — reach it over an SSH tunnel.
+if [ "$DO_ADMIN" = yes ] && [ -f "$SRC/magma-admin.py" ]; then
+  PYTHON="$(command -v python3 2>/dev/null || echo /usr/bin/python3)"
+  say "installing the /admin web panel ($ADMIN_SERVICE on $ADMIN_BIND:$ADMIN_PORT)"
+  ADMIN_CONTENT="[Unit]
+Description=Magma /admin web panel ($DOMAIN)
+After=$SERVICE.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$PYTHON $SRC/magma-admin.py --config $CONFIG_DIR/magma.conf --bind $ADMIN_BIND --port $ADMIN_PORT
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
+"
+  if [ "$DRY" = yes ]; then printf '   %s[dry-run]%s would write %s:\n%s\n' "$c_yel" "$c_0" "$ADMIN_UNIT" "$ADMIN_CONTENT"
+  else printf '%s' "$ADMIN_CONTENT" > "$ADMIN_UNIT"; fi
+  run systemctl daemon-reload
+  run systemctl enable "$ADMIN_SERVICE" >/dev/null 2>&1 || true
+  if [ "$DO_START" = yes ]; then
+    run systemctl restart "$ADMIN_SERVICE" || warn "admin panel did not start — see: journalctl -u $ADMIN_SERVICE"
+    ok "admin panel on http://$ADMIN_BIND:$ADMIN_PORT  (tunnel:  ssh -L $ADMIN_PORT:$ADMIN_BIND:$ADMIN_PORT root@this-host)"
+  else
+    ok "admin panel unit installed (not started; --no-start)"
+  fi
+elif [ "$DO_ADMIN" = yes ]; then
+  warn "magma-admin.py not found in $SRC — skipping the /admin panel"
+else
+  warn "/admin panel skipped (--no-admin)"
 fi
 
 # ------------------------------------------------- 10. Let's Encrypt ---------
@@ -317,9 +367,9 @@ ${c_grn} Magma is installed as a systemd service.${c_0}
 ${c_grn}============================================================${c_0}
 
   Service:   systemctl status $SERVICE     (enabled on boot)
-  Control:   magma status | restart | stop | start | logs | tls <email>
+  Control:   magma status | restart | stop | start | logs | tls <email> | admin
   Webmail:   https://$HOSTNAME_FQDN/
-  Admin:     ${ADMIN_USER}@${DOMAIN}
+  Admin:     ${ADMIN_USER}@${DOMAIN}$( [ "$DO_ADMIN" = yes ] && printf '\n  Panel:     http://%s:%s/  (loopback — tunnel: ssh -L %s:%s:%s root@this-host)' "$ADMIN_BIND" "$ADMIN_PORT" "$ADMIN_PORT" "$ADMIN_BIND" "$ADMIN_PORT" )
   Secrets:   $SECRETS_DIR   (DNS records in dns-records.txt)
 
   ${c_yel}Still yours to do${c_0} (any mail server needs these):

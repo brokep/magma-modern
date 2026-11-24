@@ -10,6 +10,7 @@
 #   magma restart|start|stop
 #   magma logs            follow the server logs
 #   magma tls <email>     obtain / renew a Let's Encrypt certificate
+#   magma admin [sub]     /admin panel: url|status|restart|start|stop|logs
 #   magma exec <cmd...>   run a command inside the container
 #   magma version | help
 # =============================================================================
@@ -43,6 +44,17 @@ case "$cmd" in
     exec "$SRC/magma-tls.sh" --hostname "$MAGMA_HOSTNAME" --email "$email" \
          --domain "$MAGMA_DOMAIN" --secrets-dir "$MAGMA_SECRETS_DIR" \
          --service "$SVC" --container "$CNAME" --yes;;
+  admin)
+    ASVC="${MAGMA_ADMIN_SERVICE:-$SVC-admin}"
+    sub="${1:-url}"
+    case "$sub" in
+      url|"")  echo "http://${MAGMA_ADMIN_BIND:-127.0.0.1}:${MAGMA_ADMIN_PORT:-8080}/"
+               echo "tunnel:  ssh -L ${MAGMA_ADMIN_PORT:-8080}:${MAGMA_ADMIN_BIND:-127.0.0.1}:${MAGMA_ADMIN_PORT:-8080} root@$(hostname)";;
+      status)  exec systemctl status "$ASVC";;
+      restart|start|stop) exec systemctl "$sub" "$ASVC";;
+      logs)    exec journalctl -u "$ASVC" -f;;
+      *)       echo "usage: magma admin [url|status|restart|start|stop|logs]" >&2; exit 2;;
+    esac;;
   exec)
     [ $# -gt 0 ] || { echo "usage: magma exec <command...>" >&2; exit 2; }
     exec "$PODMAN" exec -it "$CNAME" "$@";;
