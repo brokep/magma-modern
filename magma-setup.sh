@@ -25,6 +25,9 @@
 #   --ref <branch>        magma branch to build (default: openssl3)
 #   --container <n>       container name (default: magma)
 #   --secrets-dir <p>     where generated secrets land (default: ./secrets/<domain>)
+#   --letsencrypt <email> after boot, get a real CA cert via Let's Encrypt
+#                         (needs DNS pointed here + :80 reachable; see magma-tls.sh)
+#   --le-staging          use Let's Encrypt staging (test issuance, untrusted cert)
 #   --no-build            don't build; the --image must already exist
 #   --rebuild             force an image rebuild even if --image exists
 #   --yes                 assume yes; never prompt (requires the flags above)
@@ -36,6 +39,7 @@ set -euo pipefail
 DOMAIN="" HOSTNAME_FQDN="" ADMIN_USER="admin" ADMIN_PASS=""
 ENGINE="" IMAGE="magma:port" REF="openssl3" CONTAINER="magma"
 SECRETS_DIR="" BUILD="auto" ASSUME_YES="no"
+LE_EMAIL="" LE_STAGING="no"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 # Host:container port map (see magma.prod.config.template).
@@ -92,6 +96,8 @@ while [ $# -gt 0 ]; do
     --ref)         REF="$2"; shift 2;;
     --container)   CONTAINER="$2"; shift 2;;
     --secrets-dir) SECRETS_DIR="$2"; shift 2;;
+    --letsencrypt) LE_EMAIL="$2"; shift 2;;
+    --le-staging)  LE_STAGING="yes"; shift;;
     --no-build)    BUILD="no"; shift;;
     --rebuild)     BUILD="force"; shift;;
     --yes|-y)      ASSUME_YES="yes"; shift;;
@@ -236,6 +242,30 @@ if [ "$ready" = yes ]; then
   fi
 fi
 
+# --------------------------------------------- Let's Encrypt (optional) -------
+# Hand off to magma-tls.sh for a real CA-signed cert. Needs DNS pointed at this
+# host and :80 reachable from the internet, so it runs AFTER the server is up.
+TLS_IS_LE="no"
+if [ -n "$LE_EMAIL" ]; then
+  if [ ! -x "$HERE/magma-tls.sh" ]; then
+    warn "magma-tls.sh not found/executable in $HERE — skipping Let's Encrypt"
+  else
+    say "requesting a Let's Encrypt certificate for $HOSTNAME_FQDN"
+    le_args=( --hostname "$HOSTNAME_FQDN" --email "$LE_EMAIL" --domain "$DOMAIN"
+              --secrets-dir "$SECRETS_DIR" --container "$CONTAINER" --engine "$ENGINE" )
+    # Certify the bare domain too when the hostname is a subdomain of it.
+    [ "$HOSTNAME_FQDN" != "$DOMAIN" ] && le_args+=( --extra-domain "$DOMAIN" )
+    [ "$LE_STAGING" = yes ] && le_args+=( --staging )
+    [ "$ASSUME_YES" = yes ] && le_args+=( --yes )
+    if "$HERE/magma-tls.sh" "${le_args[@]}"; then
+      TLS_IS_LE="yes"
+    else
+      warn "Let's Encrypt step did not complete — Magma is still up on its self-signed cert."
+      warn "fix DNS/:80 and re-run:  sudo $HERE/magma-tls.sh --hostname $HOSTNAME_FQDN --email $LE_EMAIL --domain $DOMAIN --secrets-dir $SECRETS_DIR"
+    fi
+  fi
+fi
+
 # ---------------------------------------------------------------- summary -----
 DKIM_LINE="$( [ -f "$SECRETS_DIR/dns-records.txt" ] && echo "see $SECRETS_DIR/dns-records.txt" || echo "(dns-records.txt missing)" )"
 cat <<DONE
@@ -258,8 +288,13 @@ ${c_grn}============================================================${c_0}
     2. Publish SPF / DKIM / DMARC:  ${DKIM_LINE}
     3. Make sure your host/ISP does not block outbound port 25.
 
-  TLS is self-signed for now — run Phase 2 (Let's Encrypt) to get a real cert,
-  or drop a CA cert into ${SECRETS_DIR}/ and restart.
+$( if [ "$TLS_IS_LE" = yes ]; then
+printf '  TLS is CA-signed by Lets Encrypt and renews automatically (see magma-tls.sh).'
+else
+printf '  TLS is self-signed for now. For a real cert:\n'
+printf '      sudo %s/magma-tls.sh --hostname %s --email you@%s --domain %s --secrets-dir %s\n' "$HERE" "$HOSTNAME_FQDN" "$DOMAIN" "$DOMAIN" "$SECRETS_DIR"
+printf '  (needs DNS pointed here and :80 reachable), or drop a CA cert into %s/ and restart.' "$SECRETS_DIR"
+fi )
 
   Logs:    $ENGINE logs -f $CONTAINER
   Stop:    $ENGINE rm -f $CONTAINER     (secrets in $SECRETS_DIR are kept)
