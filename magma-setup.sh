@@ -296,6 +296,9 @@ printf '      sudo %s/magma-tls.sh --hostname %s --email you@%s --domain %s --se
 printf '  (needs DNS pointed here and :80 reachable), or drop a CA cert into %s/ and restart.' "$SECRETS_DIR"
 fi )
 
+  Check deliverability (once DNS is pointed here):
+      $HERE/magma-status.sh --domain $DOMAIN --hostname $HOSTNAME_FQDN --secrets-dir $SECRETS_DIR
+
   Logs:    $ENGINE logs -f $CONTAINER
   Stop:    $ENGINE rm -f $CONTAINER     (secrets in $SECRETS_DIR are kept)
 
