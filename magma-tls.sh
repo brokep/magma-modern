@@ -34,6 +34,9 @@
 #   --secrets-dir <p>    dir holding tls.<d>.pem (default ./secrets/<domain>)
 #   --extra-domain <h>   add another SAN (repeatable; e.g. the bare domain)
 #   --container <n>      Magma container to stop/start (default magma)
+#   --service <n>        systemd service to stop/start instead of the container
+#                        (for host installs — a bare 'podman stop' would just be
+#                        auto-restarted by the unit, stealing :80 back from certbot)
 #   --engine <e>         podman|docker (default: autodetect)
 #   --cert-name <n>      certbot lineage name (default magma-<hostname>)
 #   --hook-dir <p>       where hook scripts are written (default <secrets>/letsencrypt)
@@ -49,7 +52,7 @@ set -euo pipefail
 
 # --------------------------------------------------------------- defaults ----
 HOSTNAME_FQDN="" EMAIL="" DOMAIN="" SECRETS_DIR="" CONTAINER="magma" ENGINE=""
-CERT_NAME="" HOOK_DIR="" STAGING="no" DRY_RUN="no" FORCE="no"
+SERVICE="" CERT_NAME="" HOOK_DIR="" STAGING="no" DRY_RUN="no" FORCE="no"
 WANT_TIMER="yes" WANT_INSTALL="yes" ASSUME_YES="no"
 EXTRA_DOMAINS=()
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -70,6 +73,7 @@ while [ $# -gt 0 ]; do
     --secrets-dir)  SECRETS_DIR="$2"; shift 2;;
     --extra-domain) EXTRA_DOMAINS+=("$2"); shift 2;;
     --container)    CONTAINER="$2"; shift 2;;
+    --service)      SERVICE="$2"; shift 2;;
     --engine)       ENGINE="$2"; shift 2;;
     --cert-name)    CERT_NAME="$2"; shift 2;;
     --hook-dir)     HOOK_DIR="$2"; shift 2;;
@@ -104,6 +108,19 @@ if [ -z "$ENGINE" ]; then
   else die "no container engine found — install podman (recommended) or docker"; fi
 fi
 command -v "$ENGINE" >/dev/null 2>&1 || die "engine '$ENGINE' not on PATH"
+
+# How to free/restore :80 around the challenge. Under systemd we must drive the
+# SERVICE (a bare 'podman stop' would be auto-restarted by Restart=always and
+# grab :80 back); otherwise we stop/start the container directly.
+if [ -n "$SERVICE" ]; then
+  PRE_BODY="systemctl stop $SERVICE 2>/dev/null || true"
+  POST_BODY="systemctl start $SERVICE 2>/dev/null || true"
+else
+  PRE_BODY="$ENGINE stop \"$CONTAINER\" 2>/dev/null || true"
+  POST_BODY="$ENGINE start \"$CONTAINER\" 2>/dev/null || true"
+fi
+start_magma() { if [ -n "$SERVICE" ]; then systemctl start "$SERVICE" >/dev/null 2>&1 || true
+                else "$ENGINE" start "$CONTAINER" >/dev/null 2>&1 || true; fi; }
 
 # ----------------------------------------------------------- ensure certbot --
 if ! command -v certbot >/dev/null 2>&1; then
@@ -145,13 +162,13 @@ cat > "$HOOK_DIR/pre-hook.sh" <<EOF
 #!/bin/sh
 # Free :80 for certbot's standalone HTTP-01 challenge. Runs only when a cert is
 # actually due for renewal, so Magma is not bounced on routine renew checks.
-exec $ENGINE stop "$CONTAINER" 2>/dev/null || true
+$PRE_BODY
 EOF
 
 cat > "$HOOK_DIR/post-hook.sh" <<EOF
 #!/bin/sh
 # Bring Magma back after the challenge (it re-reads the PEM on start).
-$ENGINE start "$CONTAINER" 2>/dev/null || true
+$POST_BODY
 EOF
 
 cat > "$HOOK_DIR/deploy-hook.sh" <<EOF
@@ -185,7 +202,7 @@ for d in "${EXTRA_DOMAINS[@]:-}"; do [ -n "$d" ] && CB+=(-d "$d"); done
 
 say "requesting certificate for: $HOSTNAME_FQDN${EXTRA_DOMAINS:+ ${EXTRA_DOMAINS[*]}}"
 if ! "${CB[@]}"; then
-  "$ENGINE" start "$CONTAINER" >/dev/null 2>&1 || true   # make sure Magma is back up even on failure
+  start_magma   # make sure Magma is back up even on failure
   die "certbot failed — see the output above and /var/log/letsencrypt/letsencrypt.log"
 fi
 
@@ -207,7 +224,7 @@ ok "installed cert into $PEM"
 
 # Make sure Magma is running with the new cert (post-hook should have started it;
 # start is idempotent).
-"$ENGINE" start "$CONTAINER" >/dev/null 2>&1 || true
+start_magma
 
 # ------------------------------------------------------- renewal timer -------
 if [ "$WANT_TIMER" = yes ]; then
