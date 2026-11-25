@@ -257,25 +257,133 @@ void api_endpoint_delete_user(connection_t *con) {
 }
 
 void api_endpoint_change_password(connection_t *con) {
+
 	json_error_t jansson_err;
-	chr_t *password;
-	chr_t *new_password;
-	chr_t *new_password_verification;
+	chr_t *username = NULL, *current_password = NULL, *new_password = NULL, *new_password_verification = NULL;
+	stringer_t *sanitized = NULL, *new_salt = NULL, *b64_salt = NULL, *b64_verification = NULL;
+	stringer_t *shard = MANAGEDBUF(64), *old_realm = NULL, *new_realm = NULL;
+	auth_t *auth = NULL;
+	auth_stacie_t *stacie = NULL;
+	uint64_t usernum = 0;
+	uint32_t bonus = 0;
+	uint_t rotated = 0;
+	int64_t transaction = -1;
+	int_t shard_state;
 
-	if (json_unpack_ex_d(con->http.portal.params, &jansson_err, JSON_STRICT, "{s:s, s:s, s:s}", "password", &password, "new_password", &new_password, "new_password_verification",
-		&new_password_verification) != 0) {
-		log_pedantic(
-			"Received invalid portal auth request parameters "
-			"{ user = %s, errmsg = %s }",
-			st_char_get(con->http.session->user->username),
-			jansson_err.text);
-
+	// Loopback-only, like register/delete_user. The current password is OPTIONAL: when supplied, the account's
+	// existing storage keys are re-sealed under the new password (no data loss); when omitted, this is an
+	// administrative reset that regenerates the keypair, so data encrypted to the previous keypair is abandoned.
+	// Magma's zero-access design makes that unavoidable — the old keys can't be re-wrapped without the old password.
+	if (json_unpack_ex_d(con->http.portal.params, &jansson_err, JSON_STRICT, "{s:s, s:s, s:s, s:s}", "username", &username,
+			"password", &current_password, "new_password", &new_password, "new_password_verification", &new_password_verification) != 0 &&
+		json_unpack_ex_d(con->http.portal.params, &jansson_err, JSON_STRICT, "{s:s, s:s, s:s}", "username", &username,
+			"new_password", &new_password, "new_password_verification", &new_password_verification) != 0) {
+		log_pedantic("Received invalid change_password request parameters. { errmsg = %s }", jansson_err.text);
 		api_error(con, HTTP_ERROR_400, JSON_RPC_2_ERROR_SERVER_METHOD_PARAMS, "Invalid method parameters.");
-
 		goto out;
 	}
 
-	/// TODO: - wire up here
+	// The new password and its verification must match.
+	if (st_cmp_cs_eq(NULLER(new_password), NULLER(new_password_verification)) != 0) {
+		api_error(con, HTTP_ERROR_400, JSON_RPC_2_ERROR_SERVER_METHOD_PARAMS, "The new password and its verification did not match.");
+		goto out;
+	}
 
-	out: return;
+	// The new password must clear the configured minimum in both bytes and characters.
+	if (st_length_get(NULLER(new_password)) < magma.secure.minimum_password_length ||
+		utf8_length_st(NULLER(new_password)) < magma.secure.minimum_password_length) {
+		api_error(con, HTTP_ERROR_400, JSON_RPC_2_ERROR_SERVER_METHOD_PARAMS, "The new password is shorter than the minimum length.");
+		goto out;
+	}
+
+	// Sanitize the username so it matches the stored userid, exactly as registration and login do.
+	if (!(sanitized = auth_sanitize_username(NULLER(username)))) {
+		api_error(con, HTTP_ERROR_400, JSON_RPC_2_ERROR_SERVER_METHOD_PARAMS, "Invalid username provided.");
+		goto out;
+	}
+
+	// Resolve the account. With a current password we authenticate (and obtain the old master key needed to
+	// re-seal the storage keys); without one we only look the account up (an administrative reset).
+	if (current_password) {
+		if (auth_login(sanitized, NULLER(current_password), &auth) != 0) {
+			api_error(con, HTTP_ERROR_400, PORTAL_ENDPOINT_ERROR_AUTH, "The current password is incorrect.");
+			goto out;
+		}
+	}
+	else if (!(auth = auth_challenge(sanitized))) {
+		api_error(con, HTTP_ERROR_400, JSON_RPC_2_ERROR_SERVER_METHOD_PARAMS, "No such user.");
+		goto out;
+	}
+
+	usernum = auth->usernum;
+	bonus = (uint32_t)auth->seasoning.bonus;
+
+	// Derive the new STACIE salt, verification token, and master key from the new password.
+	if (!(new_salt = stacie_create_salt(NULL)) || !(b64_salt = base64_encode_mod(new_salt, NULL)) ||
+		!(stacie = auth_stacie(bonus, sanitized, NULLER(new_password), new_salt, NULL, NULL)) ||
+		!(b64_verification = base64_encode_mod(stacie->tokens.verification, NULL))) {
+		api_error(con, HTTP_ERROR_500, JSON_RPC_2_ERROR_SERVER_INTERNAL, "Internal server error.");
+		goto out;
+	}
+
+	// All of the database writes happen within a single transaction.
+	if ((transaction = tran_start()) < 0) {
+		api_error(con, HTTP_ERROR_500, JSON_RPC_2_ERROR_SERVER_INTERNAL, "Internal server error.");
+		goto out;
+	}
+
+	// Load the mail realm shard (generating one if the account somehow lacks it, mirroring meta_update_realms).
+	shard_state = meta_data_fetch_shard(usernum, 0, PLACER("mail", 4), shard, &rotated, transaction);
+	if (shard_state == 1) {
+		if (!stacie_create_shard(shard) || meta_data_insert_shard(usernum, 0, PLACER("mail", 4), shard, transaction) < 0) {
+			api_error(con, HTTP_ERROR_500, JSON_RPC_2_ERROR_SERVER_INTERNAL, "Internal server error.");
+			goto out;
+		}
+		rotated = 1;
+	}
+	else if (shard_state != 0) {
+		api_error(con, HTTP_ERROR_500, JSON_RPC_2_ERROR_SERVER_INTERNAL, "Internal server error.");
+		goto out;
+	}
+
+	// Derive the new realm key, and (only when re-sealing) the old one. The realm key is derived from the master
+	// key, the shard, and — for rotated accounts — the salt.
+	if (current_password && !(old_realm = stacie_realm_key(auth->keys.master, PLACER("mail", 4), (rotated ? auth->seasoning.salt : shard), shard))) {
+		api_error(con, HTTP_ERROR_500, JSON_RPC_2_ERROR_SERVER_INTERNAL, "Internal server error.");
+		goto out;
+	}
+	if (!(new_realm = stacie_realm_key(stacie->keys.master, PLACER("mail", 4), (rotated ? new_salt : shard), shard))) {
+		api_error(con, HTTP_ERROR_500, JSON_RPC_2_ERROR_SERVER_INTERNAL, "Internal server error.");
+		goto out;
+	}
+
+	// Re-seal (or regenerate) the storage keys, then store the new salt and verification token.
+	if (meta_crypto_keys_rekey(usernum, sanitized, old_realm, new_realm, transaction) != 0 ||
+		auth_data_update_password(sanitized, b64_salt, b64_verification, bonus, transaction) != 0) {
+		tran_rollback(transaction);
+		transaction = -1;
+		api_error(con, HTTP_ERROR_500, JSON_RPC_2_ERROR_SERVER_INTERNAL, "Internal server error.");
+		goto out;
+	}
+
+	tran_commit(transaction);
+	transaction = -1;
+
+	// Invalidate any cached meta context for this user by bumping the user serial, so an existing session (and the
+	// next login) rebuilds its verification token and storage-realm key from the new values instead of the stale
+	// cached ones. Nothing else increments the OBJECT_USER serial after account creation, so this is targeted.
+	serial_increment(OBJECT_USER, usernum);
+
+	api_response(con, HTTP_OK, "{s:s, s:{s:s}, s:I}", "jsonrpc", "2.0", "result", "change_password", "success", "id", con->http.portal.id);
+
+	out:
+
+	if (transaction >= 0) {
+		tran_rollback(transaction);
+	}
+	st_cleanup(sanitized, new_salt, b64_salt, b64_verification, old_realm, new_realm);
+	if (stacie) auth_stacie_cleanup(stacie);
+	if (auth) auth_free(auth);
+
+	return;
 }

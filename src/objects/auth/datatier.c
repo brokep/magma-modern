@@ -79,6 +79,69 @@ int_t auth_data_update_legacy(uint64_t usernum, stringer_t *legacy, stringer_t *
 }
 
 /**
+ * @brief	Reset a user's password to a new value, without needing the current one.
+ * @note	This is the administrative password-reset primitive behind the JSON-RPC
+ * 			"change_password" method. It derives a fresh STACIE salt + verification
+ * 			token from the supplied password (bonus rounds reset to zero, matching a
+ * 			fresh registration) and writes them over the user's row, clearing any
+ * 			legacy credential. It does NOT require, or verify, the existing password —
+ * 			authorization is the caller's responsibility (the method is loopback-only).
+ * @param	username	the sanitized userid whose password is being reset.
+ * @param	password	the new plaintext password.
+ * @return	0 on success, 1 for an invalid/too-short password or an unknown user,
+ * 			and -1 if an internal error occurs.
+ */
+int_t auth_data_update_password(stringer_t *username, stringer_t *b64_salt, stringer_t *b64_verification, uint32_t bonus, int64_t transaction) {
+
+	int64_t affected;
+	MYSQL_BIND parameters[4];
+
+	// The salt (base64, 171 chars) and verification token (base64, 86 chars) are pre-derived by the caller, which
+	// also needs the matching master key to re-seal the user's storage keys, so the derivation lives there.
+	if (st_empty(username) || st_empty(b64_salt) || st_empty(b64_verification) ||
+		st_length_get(b64_salt) != 171 || st_length_get(b64_verification) != 86) {
+		log_pedantic("Invalid parameters passed to the password update function.");
+		return -1;
+	}
+
+	mm_wipe(parameters, sizeof(parameters));
+
+	// The user specific salt value.
+	parameters[0].buffer_type = MYSQL_TYPE_STRING;
+	parameters[0].buffer_length = st_length_get(b64_salt);
+	parameters[0].buffer = st_char_get(b64_salt);
+
+	// The STACIE compatible password verification token.
+	parameters[1].buffer_type = MYSQL_TYPE_STRING;
+	parameters[1].buffer_length = st_length_get(b64_verification);
+	parameters[1].buffer = st_char_get(b64_verification);
+
+	// The number of bonus hash rounds applied during derivation.
+	parameters[2].buffer_type = MYSQL_TYPE_LONG;
+	parameters[2].buffer_length = sizeof(uint32_t);
+	parameters[2].buffer = &(bonus);
+	parameters[2].is_unsigned = true;
+
+	// The userid the reset applies to.
+	parameters[3].buffer_type = MYSQL_TYPE_STRING;
+	parameters[3].buffer_length = st_length_get(username);
+	parameters[3].buffer = st_char_get(username);
+
+	affected = stmt_exec_affected_conn(stmts.auth_update_password, parameters, transaction);
+
+	// A fresh random salt guarantees the row changes, so a matched user always affects exactly one row.
+	if (affected == 0) {
+		return 1;
+	}
+	else if (affected != 1) {
+		log_error("Unable to update the user's authentication credentials during a password change.");
+		return -1;
+	}
+
+	return 0;
+}
+
+/**
  * @brief	Update a user lock status in the database.
  *
  * @param	usernum the numerical id of the user for whom the lock will be set.

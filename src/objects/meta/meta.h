@@ -71,6 +71,7 @@ bool_t     meta_data_flags_remove(inx_t *messages, uint64_t usernum, uint64_t fo
 bool_t     meta_data_flags_replace(inx_t *messages, uint64_t usernum, uint64_t foldernum, uint32_t flags);
 uint64_t   meta_data_insert_folder(uint64_t usernum, stringer_t *name, uint64_t parent, uint32_t order);
 int_t      meta_data_insert_keys(uint64_t usernum, stringer_t *username, key_pair_t *input, int64_t transaction);
+int_t      meta_data_update_keys(uint64_t usernum, stringer_t *username, key_pair_t *input, int64_t transaction);
 int_t      meta_data_insert_shard(uint64_t usernum, uint16_t serial, stringer_t *label, stringer_t *shard, int64_t transaction);
 int_t      meta_data_insert_tag(meta_message_t *message, stringer_t *tag);
 int_t      meta_data_truncate_tags(meta_message_t *message);
@@ -89,6 +90,7 @@ void           meta_inx_remove(uint64_t usernum, META_PROTOCOL protocol);
 
 /// crypto.c
 int_t   meta_crypto_keys_create(uint64_t usernum, stringer_t *username, stringer_t *realm, int64_t transaction);
+int_t   meta_crypto_keys_rekey(uint64_t usernum, stringer_t *username, stringer_t *old_realm, stringer_t *new_realm, int64_t transaction);
 
 /// alias.c
 meta_alias_t *  alias_alloc(uint64_t aliasnum, stringer_t *address, stringer_t *display, int_t selected, uint64_t created);

@@ -233,6 +233,13 @@ int_t meta_update_user(meta_user_t *user, META_LOCK_STATUS locked) {
 		// If the serial numbers don't match, then refresh the stored data and update the object serial number.
 		else if (!(result = meta_data_fetch_user(user))) {
 			meta_user_serial_set(user, OBJECT_USER, serial);
+
+			// The user's core record changed (for example, a password change rewrote the salt, verification token,
+			// and storage keys). Drop the cached mail realm key so meta_update_realms re-derives it from the current
+			// master key the next time the storage keys are needed; otherwise a stale realm key would fail to unlock
+			// the freshly re-sealed keypair.
+			st_cleanup(user->realm.mail);
+			user->realm.mail = NULL;
 		}
 
 	}

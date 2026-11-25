@@ -154,6 +154,7 @@
 #define AUTH_GET_BY_USERID "SELECT usernum, userid, salt, auth, bonus, legacy, locked FROM Users WHERE userid = ?"
 #define AUTH_GET_BY_ADDRESS "SELECT Users.usernum, userid, salt, auth, bonus, legacy, locked FROM Users LEFT JOIN Mailboxes ON (Users.usernum = Mailboxes.usernum) WHERE Mailboxes.address = ?"
 #define AUTH_UPDATE_LEGACY_TO_STACIE "UPDATE Users SET salt = ?, auth = ?, bonus = ?, legacy = NULL WHERE usernum = ? AND legacy = ?"
+#define AUTH_UPDATE_PASSWORD "UPDATE Users SET salt = ?, auth = ?, bonus = ?, legacy = NULL WHERE userid = ?"
 
 // The meta data object.
 #define META_FETCH_USER "SELECT Users.userid, Users.auth, Users.tls, Users.overquota, Dispatch.secure FROM Users INNER JOIN Dispatch ON Users.usernum = Dispatch.usernum WHERE Users.usernum = ? AND email = 1 LIMIT 1"
@@ -268,6 +269,7 @@
 											AUTH_GET_BY_USERID, \
 											AUTH_GET_BY_ADDRESS, \
 											AUTH_UPDATE_LEGACY_TO_STACIE, \
+											AUTH_UPDATE_PASSWORD, \
 											META_FETCH_USER, \
 											META_FETCH_SHARD, \
 											META_FETCH_MAIL_KEYS, \
@@ -372,6 +374,7 @@
 											**auth_get_by_userid, \
 											**auth_get_by_address, \
 											**auth_update_legacy_to_stacie, \
+											**auth_update_password, \
 											**meta_fetch_user, \
 											**meta_fetch_shard, \
 											**meta_fetch_mail_keys, \

@@ -57,6 +57,107 @@ int_t meta_crypto_keys_create(uint64_t usernum, stringer_t *username, stringer_t
 }
 
 /**
+ * @brief	Re-key a user's storage keys for a password change.
+ * @note	The user's PRIME storage keypair is sealed with a realm key derived from the password. When the password
+ * 			changes the realm key changes, so the keypair must be re-sealed. If the OLD realm key is supplied (a normal
+ * 			password change, where the current password is known) the existing keypair is decrypted and re-encrypted
+ * 			under the new realm key, preserving access to already-stored encrypted data. If the old realm key is NULL
+ * 			(an administrative reset, where the current password is unavailable) a brand new keypair is generated under
+ * 			the new realm key — login will work, but data encrypted to the previous keypair is irrecoverable.
+ * @param	usernum		the numeric id of the user being re-keyed.
+ * @param	username	the plain text username (for logging and key storage).
+ * @param	old_realm	the realm key the existing keypair is sealed with, or NULL to regenerate the keypair.
+ * @param	new_realm	the realm key the keypair should be sealed with afterwards.
+ * @param	transaction	the SQL transaction to perform the key write within.
+ * @return	0 on success, -1 on error.
+ */
+int_t meta_crypto_keys_rekey(uint64_t usernum, stringer_t *username, stringer_t *old_realm, stringer_t *new_realm, int64_t transaction) {
+
+	int_t state, result = -1;
+	meta_user_t user;
+	key_pair_t pair = { NULL, NULL };
+	prime_t *key = NULL, *request = NULL, *signet = NULL;
+	stringer_t *reencrypted = NULL;
+
+	if (!usernum || st_empty(username) || st_empty(new_realm)) {
+		log_pedantic("Invalid parameters passed to the key rekey function.");
+		return -1;
+	}
+
+	// Re-seal path: when the current realm key is supplied, try to unlock and re-encrypt the EXISTING keypair so
+	// access to already-stored data is preserved. Fetch needs only the usernum/username.
+	if (!st_empty(old_realm)) {
+
+		mm_wipe(&user, sizeof(meta_user_t));
+		user.usernum = usernum;
+		user.username = username;
+
+		state = meta_data_fetch_keys(&user, &pair, transaction);
+
+		// Existing keypair found: decrypt with the old realm key, re-encrypt under the new one, store it (the
+		// public signet is unchanged). If none exists yet (state == 1), fall through to regenerate.
+		if (state == 0) {
+
+			if (!(key = prime_key_decrypt(old_realm, pair.private, BINARY, NONE))) {
+				log_pedantic("Unable to unlock the storage key with the current realm key. { user = %.*s }",
+					st_length_int(username), st_char_get(username));
+				st_cleanup(pair.public, pair.private);
+				return -1;
+			}
+
+			st_free(pair.private);
+			pair.private = NULL;
+
+			if (!(reencrypted = prime_key_encrypt(new_realm, key, BINARY, NULL))) {
+				log_pedantic("Unable to re-seal the storage key under the new realm key. { user = %.*s }",
+					st_length_int(username), st_char_get(username));
+				prime_free(key);
+				st_cleanup(pair.public);
+				return -1;
+			}
+			prime_free(key);
+			pair.private = reencrypted;
+
+			result = (meta_data_update_keys(usernum, username, &pair, transaction) < 0) ? -1 : 0;
+			st_cleanup(pair.public, pair.private);
+			return result;
+		}
+		else if (state != 1) {
+			return -1;
+		}
+		// state == 1: no keypair to re-wrap — fall through and generate a fresh one.
+	}
+
+	// Regenerate path: no current realm key (administrative reset), or the account had no keypair. Generate a new
+	// DIME user keypair sealed under the new realm key. Data encrypted to any previous keypair is irrecoverable.
+	// The keys are stored with an upsert so an existing row is replaced rather than colliding on the primary key.
+	if (!(key = prime_key_generate(PRIME_USER_KEY, NONE)) || !(pair.private = prime_key_encrypt(new_realm, key, BINARY, NULL))) {
+		log_pedantic("Unable to create a replacement user key. { user = %.*s }", st_length_int(username), st_char_get(username));
+		prime_cleanup(key);
+		return -1;
+	}
+
+	if (!(request = prime_request_generate(key, NULL)) || !(signet = prime_request_sign(request, org_key)) ||
+		!(pair.public = prime_get(signet, BINARY, NULL))) {
+		log_pedantic("Unable to create a replacement user signet. { user = %.*s }", st_length_int(username), st_char_get(username));
+		prime_cleanup(request);
+		prime_cleanup(signet);
+		st_cleanup(pair.private);
+		prime_free(key);
+		return -1;
+	}
+
+	prime_free(request);
+	prime_free(signet);
+	prime_free(key);
+
+	result = (meta_data_update_keys(usernum, username, &pair, transaction) < 0) ? -1 : 0;
+	st_cleanup(pair.public, pair.private);
+
+	return result;
+}
+
+/**
  * @brief	Adjust the encrypted status of a message, in accordance with the user's secure flag.
  * @param	user		a pointer to the meta user object owning the specified message.
  * @param	message		a pointer to the meta message that should have its on-disk data updated accordingly.

@@ -426,6 +426,66 @@ int_t meta_data_insert_keys(uint64_t usernum, stringer_t *username, key_pair_t *
 }
 
 /**
+ * @brief	Store a user's encryption keys, replacing any existing pair (upsert).
+ * @note	Like meta_data_insert_keys, but uses an INSERT ... ON DUPLICATE KEY UPDATE so it works whether or not the
+ * 			account already has a key row. This is what a password change needs: the keypair is being re-sealed (or
+ * 			regenerated), so a row almost always already exists.
+ * @param	usernum		the numerical id of the user the keys belong to.
+ * @param	username	the plain text username (for logging).
+ * @param	input		the public/private key pair to store.
+ * @param	transaction	the SQL transaction to perform the write within.
+ * @return	0 on success, -1 on error.
+ */
+int_t meta_data_update_keys(uint64_t usernum, stringer_t *username, key_pair_t *input, int64_t transaction) {
+
+	int64_t affected;
+	MYSQL_BIND parameters[5];
+	stringer_t *public = NULL, *private = NULL;
+
+	// Sanity check.
+	if (!usernum || !input || !st_populated(input->public, input->private)) {
+		log_pedantic("Invalid parameters passed to the storage key update function.");
+		return -1;
+	}
+
+	// Encode the key values using base64 modified.
+	if (!(public = base64_encode_mod(input->public, NULL)) || !(private = base64_encode_mod(input->private, NULL))) {
+		log_pedantic("Unable to store a user key pair. { username = %.*s }", st_length_int(username), st_char_get(username));
+		st_cleanup(public);
+		return -1;
+	}
+
+	mm_wipe(parameters, sizeof(parameters));
+
+	// Usernum.
+	parameters[0].buffer_type = MYSQL_TYPE_LONGLONG;
+	parameters[0].buffer_length = sizeof(uint64_t);
+	parameters[0].buffer = &(usernum);
+	parameters[0].is_unsigned = true;
+
+	// Public key (signet), for both the INSERT and the ON DUPLICATE KEY UPDATE.
+	parameters[1].buffer_type = parameters[3].buffer_type = MYSQL_TYPE_STRING;
+	parameters[1].buffer_length = parameters[3].buffer_length = st_length_get(public);
+	parameters[1].buffer = parameters[3].buffer = st_char_get(public);
+
+	// Private key, for both the INSERT and the ON DUPLICATE KEY UPDATE.
+	parameters[2].buffer_type = parameters[4].buffer_type = MYSQL_TYPE_STRING;
+	parameters[2].buffer_length = parameters[4].buffer_length = st_length_get(private);
+	parameters[2].buffer = parameters[4].buffer = st_char_get(private);
+
+	affected = stmt_exec_affected_conn(stmts.update_user_storage_keys, parameters, transaction);
+	st_cleanup(public, private);
+
+	if (affected < 0) {
+		log_pedantic("Unable to update the user signet and key. A database error occurred. { username = %.*s }",
+			st_length_int(username), st_char_get(username));
+		return -1;
+	}
+
+	return 0;
+}
+
+/**
  * @brief	Retrieve a shard value for user account.
  *
  * @param	usernum		the numerical id of the user to whom the alert message belongs.

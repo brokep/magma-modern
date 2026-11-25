@@ -87,6 +87,7 @@ int_t     auth_response(auth_t *auth, stringer_t *ephemeral);
 /// datatier.c
 int_t   auth_data_fetch(auth_t *auth);
 int_t   auth_data_update_legacy(uint64_t usernum, stringer_t *legacy, stringer_t *salt, stringer_t *verification, uint32_t bonus);
+int_t   auth_data_update_password(stringer_t *username, stringer_t *b64_salt, stringer_t *b64_verification, uint32_t bonus, int64_t transaction);
 void    auth_data_update_lock(uint64_t usernum, auth_lock_status_t lock);
 
 /// stacie.c
