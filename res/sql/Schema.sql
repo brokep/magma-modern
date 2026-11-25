@@ -353,8 +353,8 @@ CREATE TABLE `Messages` (
   KEY `IX_USERNUM` (`usernum`),
   KEY `IX_SIGNUM` (`signum`),
   KEY `IX_FOLDERNUM_USERNUM` (`foldernum`,`usernum`),
-  CONSTRAINT `Messages_ibfk_1` FOREIGN KEY (`usernum`) REFERENCES `Users` (`usernum`) ON UPDATE CASCADE,
-  CONSTRAINT `Messages_ibfk_2` FOREIGN KEY (`foldernum`, `usernum`) REFERENCES `Folders` (`foldernum`, `usernum`) ON UPDATE CASCADE,
+  CONSTRAINT `Messages_ibfk_1` FOREIGN KEY (`usernum`) REFERENCES `Users` (`usernum`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `Messages_ibfk_2` FOREIGN KEY (`foldernum`, `usernum`) REFERENCES `Folders` (`foldernum`, `usernum`) ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT `Messages_ibfk_3` FOREIGN KEY (`signum`) REFERENCES `Signatures` (`signum`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 MAX_ROWS=4294967295 AVG_ROW_LENGTH=300 COMMENT='A list of all e-mails we have stored on the system.';
 

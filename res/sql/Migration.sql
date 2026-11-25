@@ -33,7 +33,7 @@ CREATE TABLE `Aliases` (
   UNIQUE KEY `UNIQ_DISPLAY` (`usernum`,`address`,`display`),
   KEY `IX_USERNUM` (`usernum`),
   KEY `IX_USERNUM_ADDRESS` (`usernum`,`address`),
-  CONSTRAINT `Aliases_ibfk_1` FOREIGN KEY (`usernum`) REFERENCES `Users` (`usernum`) ON UPDATE CASCADE
+  CONSTRAINT `Aliases_ibfk_1` FOREIGN KEY (`usernum`) REFERENCES `Users` (`usernum`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=latin1 MAX_ROWS=4294967295 AVG_ROW_LENGTH=100 COMMENT='Store mailbox display aliases and default status information';
 
 INSERT INTO Aliases (`usernum`,`address`,`display`,`created`) SELECT usernum, address, address, NOW() FROM Mailboxes;
@@ -67,7 +67,7 @@ CREATE TABLE `Realms` (
   `shard` VARCHAR(86) NOT NULL,
   PRIMARY KEY (`usernum`, `serial`, `label`),
   KEY `IX_USERNUM` (`usernum`),
-  CONSTRAINT `User_Realms_ibfk_1` FOREIGN KEY (`usernum`) REFERENCES `Users` (`usernum`) ON UPDATE CASCADE
+  CONSTRAINT `User_Realms_ibfk_1` FOREIGN KEY (`usernum`) REFERENCES `Users` (`usernum`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=latin1 MAX_ROWS=4294967295 AVG_ROW_LENGTH=100 COMMENT='User shard values for the different realms.';
 
 ALTER TABLE `Realms` 
