@@ -9,7 +9,7 @@
 #
 # What it gives an operator (the Mail-in-a-Box admin panel, Magma edition):
 #   * Overview   — service/container health, TLS cert, account count.
-#   * Users      — list / add / delete mail accounts.
+#   * Users      — list / add / delete mail accounts, reset a locked-out password.
 #   * Status     — the magma-status.sh deliverability checks, in the browser.
 #   * DNS        — the SPF/DKIM/DMARC records to publish.
 #   * Restart    — bounce the mail server.
@@ -450,6 +450,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._user_add(data)
         if path == "/api/users/delete":
             return self._user_delete(data)
+        if path == "/api/users/reset-password":
+            return self._user_reset_pw(data)
         if path == "/api/service/restart":
             return self._service_restart()
         return self._json(404, {"error": "unknown endpoint"})
@@ -514,6 +516,33 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True})
         except Exception as e:  # noqa: BLE001
             return self._json(500, {"error": str(e)})
+
+    def _user_reset_pw(self, data):
+        user = (data.get("username") or "").strip()
+        pw = data.get("password") or ""
+        if not USER_RE.match(user):
+            return self._json(400, {"error": "invalid username"})
+        if len(pw) < 8:
+            return self._json(400, {"error": "password must be at least 8 characters"})
+        try:   # USER_RE forbids quotes, so interpolation is safe
+            if db_query(f"SELECT COUNT(*) FROM Users WHERE userid='{user}';").strip() == "0":
+                return self._json(422, {"error": "no such user"})
+        except Exception as e:  # noqa: BLE001
+            return self._json(500, {"error": str(e)})
+        # Administrative reset: call change_password with NO current password. Magma's zero-access
+        # design means the storage keypair is regenerated, so mail encrypted to the previous keypair
+        # is abandoned — hence this is surfaced in the UI as a destructive "reset", not a "change".
+        resp = json_rpc("change_password", {
+            "username": user,
+            "new_password": pw,
+            "new_password_verification": pw,
+        })
+        if isinstance(resp, dict) and "result" in resp:
+            return self._json(200, {"ok": True})
+        msg = "password reset failed"
+        if isinstance(resp, dict) and isinstance(resp.get("error"), dict):
+            msg = resp["error"].get("message", msg)
+        return self._json(422, {"error": msg})
 
     def _service_restart(self):
         svc = CFG.get("MAGMA_SERVICE", "magma")
@@ -685,7 +714,7 @@ async function viewUsers(){
       <td><span class="pill">${esc(u.plan)}</span></td>
       <td>${u.locked?'<span class="bad">locked</span>':'<span class="ok">active</span>'}</td>
       <td class="r">${bytes(u.size)} / ${bytes(u.quota)}</td>
-      <td class="r">${admin?'':`<button class="danger" data-del="${esc(u.userid)}">Delete</button>`}</td>
+      <td class="r"><button data-reset="${esc(u.userid)}">Reset pw</button>${admin?'':` <button class="danger" data-del="${esc(u.userid)}">Delete</button>`}</td>
     </tr>`;
   }).join('');
   v.innerHTML = `
@@ -714,6 +743,15 @@ async function viewUsers(){
   v.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{
     if(!confirm('Delete '+b.dataset.del+' and all their mail? This cannot be undone.')) return;
     try{ await api('/api/users/delete',{method:'POST',body:JSON.stringify({username:b.dataset.del})}); viewUsers(); }
+    catch(e){ alert(e.message); }
+  });
+  v.querySelectorAll('[data-reset]').forEach(b=>b.onclick=async()=>{
+    const who=b.dataset.reset;
+    const pw=prompt('Reset password for '+who+'.\\n\\nThis is an ADMIN reset: their existing mailbox encryption key is regenerated, so messages already stored for this account become unreadable. Use this only for a locked-out account.\\n\\nNew password (min 8 chars):');
+    if(pw===null) return;
+    if(pw.length<8){ alert('Password must be at least 8 characters.'); return; }
+    if(!confirm('Reset '+who+"'s password now? Their stored mail will be abandoned.")) return;
+    try{ await api('/api/users/reset-password',{method:'POST',body:JSON.stringify({username:who,password:pw})}); alert('Password reset for '+who+'.'); }
     catch(e){ alert(e.message); }
   });
 }
