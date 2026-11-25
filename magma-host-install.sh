@@ -37,6 +37,12 @@
 #   --admin-bind <ip>   /admin panel bind address (default 127.0.0.1, loopback)
 #   --admin-port <n>    /admin panel port (default 8080)
 #   --no-admin          don't install the /admin web control panel
+#   --data-dir <p>      host dir for mail storage (default /var/lib/magma-data)
+#   --db-dir <p>        host dir for the database (default /var/lib/magma-db)
+#   --backup-dir <p>    where encrypted backups land (default /var/backups/magma)
+#   --backup-schedule <t> systemd OnCalendar for backups (default '*-*-* 03:30:00')
+#   --no-harden         don't install fail2ban / automatic security updates
+#   --no-backup         don't install the scheduled backup timer
 #   --no-build          reuse --image; don't build (image must exist)
 #   --no-firewall       don't touch the firewall; print what to open instead
 #   --no-start          install the unit but don't start it
@@ -54,6 +60,10 @@ IMAGE="magma:local" REF="openssl3" REPO="https://github.com/brokep/magma-modern.
 INSTALL_DIR="/opt/magma" CONFIG_DIR="/etc/magma" SERVICE="magma"
 DO_BUILD="yes" DO_FIREWALL="yes" DO_START="yes" DRY="no" ASSUME_YES="no"
 DO_ADMIN="yes" ADMIN_BIND="127.0.0.1" ADMIN_PORT="8080"
+# Persistent host storage (so accounts + mail survive restarts/reboots), host
+# hardening (fail2ban + automatic security updates) and scheduled backups.
+DATA_DIR="/var/lib/magma-data" DB_DIR="/var/lib/magma-db" LOG_DIR="/var/log/magma"
+DO_HARDEN="yes" DO_BACKUP="yes" BACKUP_DIR="/var/backups/magma" BACKUP_SCHEDULE="*-*-* 03:30:00"
 
 PORT_MAP=( "25:7000" "587:7000" "465:7500" "110:8000" "995:8500"
            "143:9000" "993:9500" "80:10000" "443:10500" )
@@ -94,6 +104,12 @@ while [ $# -gt 0 ]; do
     --admin-bind)  ADMIN_BIND="$2"; shift 2;;
     --admin-port)  ADMIN_PORT="$2"; shift 2;;
     --no-admin)    DO_ADMIN="no"; shift;;
+    --no-harden)   DO_HARDEN="no"; shift;;
+    --no-backup)   DO_BACKUP="no"; shift;;
+    --data-dir)    DATA_DIR="$2"; shift 2;;
+    --db-dir)      DB_DIR="$2"; shift 2;;
+    --backup-dir)  BACKUP_DIR="$2"; shift 2;;
+    --backup-schedule) BACKUP_SCHEDULE="$2"; shift 2;;
     --no-build)    DO_BUILD="no"; shift;;
     --no-firewall) DO_FIREWALL="no"; shift;;
     --no-start)    DO_START="no"; shift;;
@@ -200,6 +216,11 @@ fi
 # Run the container in the foreground under systemd (works on every podman
 # version; no Quadlet dependency). --replace + ExecStartPre make restarts clean.
 say "writing systemd unit $UNIT"
+# Persist the database, the mail store and the logs on the HOST — the container
+# runs with --rm, so without these bind mounts every restart/reboot would wipe
+# all accounts and mail. The log dir also feeds fail2ban's [magma] jail.
+for d in "$DB_DIR" "$DATA_DIR" "$LOG_DIR"; do run mkdir -p "$d"; done
+run chmod 700 "$DB_DIR" "$DATA_DIR"
 PUBLISH=""; for m in "${PORT_MAP[@]}"; do PUBLISH="$PUBLISH -p $m"; done
 UNIT_CONTENT="[Unit]
 Description=Magma mail server ($DOMAIN) — podman container
@@ -218,6 +239,9 @@ ExecStart=$PODMAN run --name $CNAME --replace --rm \\
   --hostname $HOSTNAME_FQDN \\
   -e MAGMA_SEED_DEMO=0 \\
   -v $SECRETS_DIR:/etc/magma:ro,z \\
+  -v $DB_DIR:/var/lib/mysql:z \\
+  -v $DATA_DIR:/var/lib/magma:z \\
+  -v $LOG_DIR:/var/log/magma:z \\
  $PUBLISH \\
   $IMAGE
 ExecStop=$PODMAN stop -t 30 $CNAME
@@ -251,6 +275,81 @@ open_firewall() {
 }
 if [ "$DO_FIREWALL" = yes ]; then say "opening firewall ports"; open_firewall
 else warn "firewall skipped (--no-firewall) — open TCP ${FW_PORTS[*]} yourself"; fi
+
+# ------------------------------------------------- 6b. hardening --------------
+# fail2ban (brute-force protection on SSH + Magma's mail auth) and automatic
+# security updates — the baseline every internet-facing mail server wants.
+harden() {
+  # --- automatic security updates (best-effort, per distro) ---
+  case "$PKG" in
+    dnf|yum)
+      run "$PKG" -y install dnf-automatic >/dev/null 2>&1 || warn "could not install dnf-automatic"
+      if [ "$DRY" = no ] && [ -f /etc/dnf/automatic.conf ]; then
+        sed -i 's/^apply_updates = no/apply_updates = yes/' /etc/dnf/automatic.conf 2>/dev/null || true
+        sed -i 's/^upgrade_type = default/upgrade_type = security/' /etc/dnf/automatic.conf 2>/dev/null || true
+      fi
+      run systemctl enable --now dnf-automatic.timer >/dev/null 2>&1 || true
+      ok "automatic security updates: dnf-automatic.timer";;
+    apt)
+      run env DEBIAN_FRONTEND=noninteractive "$PKG" -y install unattended-upgrades >/dev/null 2>&1 || warn "could not install unattended-upgrades"
+      if [ "$DRY" = no ]; then printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null || true; fi
+      run systemctl enable --now unattended-upgrades >/dev/null 2>&1 || true
+      ok "automatic security updates: unattended-upgrades";;
+    zypper)
+      run systemctl enable --now transactional-update.timer >/dev/null 2>&1 \
+        || warn "enable automatic updates yourself (zypper)";;
+    apk)
+      warn "Alpine: schedule 'apk upgrade' via cron yourself";;
+  esac
+
+  # --- fail2ban ---
+  case "$PKG" in
+    dnf|yum)  run "$PKG" -y install fail2ban >/dev/null 2>&1 || true;;
+    apt)      run env DEBIAN_FRONTEND=noninteractive "$PKG" -y install fail2ban >/dev/null 2>&1 || true;;
+    zypper)   run "$PKG" -n install fail2ban >/dev/null 2>&1 || true;;
+    apk)      run "$PKG" add --no-cache fail2ban >/dev/null 2>&1 || true;;
+  esac
+  if ! command -v fail2ban-server >/dev/null 2>&1 && [ "$DRY" = no ]; then
+    warn "fail2ban not available on this distro — skipping (install it yourself to enable the jails)"
+    return 0
+  fi
+  if [ "$DRY" = no ]; then
+    mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d
+    # the Magma filter ships in the source tree
+    if [ -f "$SRC/res/fail2ban/magma.conf" ]; then
+      install -m 0644 "$SRC/res/fail2ban/magma.conf" /etc/fail2ban/filter.d/magma.conf
+    else
+      warn "res/fail2ban/magma.conf missing from $SRC — the [magma] jail filter won't be installed"
+    fi
+    # jails: SSH (universal) + Magma mail auth (reads the host-mounted log dir)
+    cat > /etc/fail2ban/jail.d/magma.local <<JAIL
+# Installed by magma-host-install.sh
+[DEFAULT]
+bantime  = 1h
+findtime = 10m
+maxretry = 5
+backend  = auto
+
+[sshd]
+enabled = true
+
+[magma]
+enabled  = true
+filter   = magma
+logpath  = $LOG_DIR/magmad.*.log
+port     = 25,465,587,110,995,143,993
+maxretry = 5
+bantime  = 1h
+JAIL
+  else
+    printf '   %s[dry-run]%s would write /etc/fail2ban/filter.d/magma.conf + jail.d/magma.local\n' "$c_yel" "$c_0"
+  fi
+  run systemctl enable fail2ban >/dev/null 2>&1 || true
+  run systemctl restart fail2ban >/dev/null 2>&1 || warn "fail2ban did not restart — check: journalctl -u fail2ban"
+  ok "fail2ban: sshd + magma jails (ban 5 failures/10m for 1h)"
+}
+if [ "$DO_HARDEN" = yes ]; then say "hardening the host (fail2ban + auto-updates)"; harden
+else warn "hardening skipped (--no-harden)"; fi
 
 # ------------------------------------------------- 7. wait + mint admin ------
 if [ "$DO_START" = yes ] && [ "$DRY" = no ]; then
@@ -294,6 +393,10 @@ MAGMA_PODMAN=$PODMAN
 MAGMA_ADMIN_SERVICE=$ADMIN_SERVICE
 MAGMA_ADMIN_BIND=$ADMIN_BIND
 MAGMA_ADMIN_PORT=$ADMIN_PORT
+MAGMA_DATA_DIR=$DATA_DIR
+MAGMA_DB_DIR=$DB_DIR
+MAGMA_LOG_DIR=$LOG_DIR
+MAGMA_BACKUP_DIR=$BACKUP_DIR
 "
 if [ "$DRY" = yes ]; then printf '   %s[dry-run]%s would write %s/magma.conf\n' "$c_yel" "$c_0" "$CONFIG_DIR"
 else printf '%s' "$CONF_CONTENT" > "$CONFIG_DIR/magma.conf"; chmod 600 "$CONFIG_DIR/magma.conf"; fi
@@ -345,6 +448,64 @@ else
   warn "/admin panel skipped (--no-admin)"
 fi
 
+# ------------------------------------------------- 9c. scheduled backups -----
+# A systemd timer that runs magma-backup.sh (encrypted DB + secrets + mail
+# store, rotated, optional offsite). The passphrase is minted on the first run.
+if [ "$DO_BACKUP" = yes ] && [ -f "$SRC/magma-backup.sh" ]; then
+  say "installing the backup timer ($SERVICE-backup.timer @ '$BACKUP_SCHEDULE')"
+  run install -m 0755 "$SRC/magma-backup.sh" /usr/local/sbin/magma-backup
+  BK_SVC="/etc/systemd/system/$SERVICE-backup.service"
+  BK_TMR="/etc/systemd/system/$SERVICE-backup.timer"
+  BK_SVC_CONTENT="[Unit]
+Description=Magma encrypted backup ($DOMAIN)
+After=$SERVICE.service
+Wants=$SERVICE.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/magma-backup backup --config $CONFIG_DIR/magma.conf
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+"
+  BK_TMR_CONTENT="[Unit]
+Description=Run the Magma backup on a schedule
+
+[Timer]
+OnCalendar=$BACKUP_SCHEDULE
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
+"
+  if [ "$DRY" = yes ]; then
+    printf '   %s[dry-run]%s would write %s + %s\n' "$c_yel" "$c_0" "$BK_SVC" "$BK_TMR"
+  else
+    printf '%s' "$BK_SVC_CONTENT" > "$BK_SVC"
+    printf '%s' "$BK_TMR_CONTENT" > "$BK_TMR"
+  fi
+  run systemctl daemon-reload
+  run systemctl enable --now "$SERVICE-backup.timer" >/dev/null 2>&1 || warn "could not enable the backup timer"
+  ok "backups: '$SERVICE-backup' nightly -> $BACKUP_DIR  (run now: magma-backup backup)"
+elif [ "$DO_BACKUP" = yes ]; then
+  warn "magma-backup.sh not found in $SRC — skipping the backup timer"
+else
+  warn "scheduled backups skipped (--no-backup)"
+fi
+
+# ------------------------------------------------- 9d. dns + autoconfig ------
+# Install the DNS-push and mail-client autoconfig helpers as commands, and
+# generate the client autoconfig profiles now (so they're ready to serve/hand out).
+for tool in magma-dns.sh magma-autoconfig.sh; do
+  [ -f "$SRC/$tool" ] && run install -m 0755 "$SRC/$tool" "/usr/local/sbin/${tool%.sh}"
+done
+if [ -f "$SRC/magma-autoconfig.sh" ] && [ "$DRY" = no ]; then
+  "$SRC/magma-autoconfig.sh" --config "$CONFIG_DIR/magma.conf" >/dev/null 2>&1 \
+    && ok "mail-client autoconfig generated in $SECRETS_DIR/autoconfig/" \
+    || warn "could not generate autoconfig (run: magma-autoconfig later)"
+fi
+
 # ------------------------------------------------- 10. Let's Encrypt ---------
 if [ -n "$LE_EMAIL" ] && [ "$DRY" = no ]; then
   if [ -x "$SRC/magma-tls.sh" ]; then
@@ -371,12 +532,16 @@ ${c_grn}============================================================${c_0}
   Webmail:   https://$HOSTNAME_FQDN/
   Admin:     ${ADMIN_USER}@${DOMAIN}$( [ "$DO_ADMIN" = yes ] && printf '\n  Panel:     http://%s:%s/  (loopback — tunnel: ssh -L %s:%s:%s root@this-host)' "$ADMIN_BIND" "$ADMIN_PORT" "$ADMIN_PORT" "$ADMIN_BIND" "$ADMIN_PORT" )
   Secrets:   $SECRETS_DIR   (DNS records in dns-records.txt)
+  Data:      db=$DB_DIR  mail=$DATA_DIR  logs=$LOG_DIR  (persist across restarts)
+$( [ "$DO_BACKUP" = yes ] && printf '  Backups:   magma-backup list | backup | restore <f>   (nightly -> %s)\n' "$BACKUP_DIR" )$( [ "$DO_HARDEN" = yes ] && printf '  Hardening: fail2ban (sshd + magma) + automatic security updates\n' )
+  DNS/mail:  magma-dns push --provider cloudflare   |   magma-autoconfig
 
   ${c_yel}Still yours to do${c_0} (any mail server needs these):
-    1. DNS:  MX $DOMAIN -> $HOSTNAME_FQDN ;  A $HOSTNAME_FQDN -> this host ;  PTR for the IP
-    2. Publish SPF / DKIM / DMARC from $SECRETS_DIR/dns-records.txt
-    3. Ensure outbound :25 isn't blocked by your host/ISP
-$( [ -z "$LE_EMAIL" ] && printf '    4. For a real TLS cert:  magma tls you@%s\n' "$DOMAIN" )
+    1. DNS:  either run  magma-dns push --provider cloudflare|route53  (auto),
+             or publish by hand:  MX $DOMAIN -> $HOSTNAME_FQDN ;  A $HOSTNAME_FQDN -> this IP ;
+             SPF/DKIM/DMARC from $SECRETS_DIR/dns-records.txt ;  and a PTR for the IP
+    2. Ensure outbound :25 isn't blocked by your host/ISP
+$( [ -z "$LE_EMAIL" ] && printf '    3. For a real TLS cert:  magma tls you@%s\n' "$DOMAIN" )$( [ -n "$BACKUP_DIR" ] && [ "$DO_BACKUP" = yes ] && printf '    4. Copy the backup passphrase ('"$CONFIG_DIR"'/.backup-pass) OFF this box\n' )
 
 DONE
 

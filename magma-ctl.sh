@@ -11,6 +11,9 @@
 #   magma logs            follow the server logs
 #   magma tls <email>     obtain / renew a Let's Encrypt certificate
 #   magma admin [sub]     /admin panel: url|status|restart|start|stop|logs
+#   magma backup [sub]    encrypted backups: backup|list|restore <file>
+#   magma dns [sub]       publish DNS records: plan|push --provider <p>
+#   magma autoconfig      (re)generate mail-client autoconfig profiles
 #   magma exec <cmd...>   run a command inside the container
 #   magma version | help
 # =============================================================================
@@ -55,13 +58,28 @@ case "$cmd" in
       logs)    exec journalctl -u "$ASVC" -f;;
       *)       echo "usage: magma admin [url|status|restart|start|stop|logs]" >&2; exit 2;;
     esac;;
+  backup)
+    # magma backup [list|backup|restore <f>] — defaults to making a backup
+    BK="$(command -v magma-backup || echo "$SRC/magma-backup.sh")"
+    need "$BK"
+    exec "$BK" "${@:-backup}" --config "$CONF";;
+  dns)
+    # magma dns [plan|push] [args] — publish the DNS records to your provider
+    DNSC="$(command -v magma-dns || echo "$SRC/magma-dns.sh")"
+    need "$DNSC"
+    exec "$DNSC" "$@" --config "$CONF";;
+  autoconfig)
+    # magma autoconfig — (re)generate the mail-client autoconfig profiles
+    AC="$(command -v magma-autoconfig || echo "$SRC/magma-autoconfig.sh")"
+    need "$AC"
+    exec "$AC" --config "$CONF" "$@";;
   exec)
     [ $# -gt 0 ] || { echo "usage: magma exec <command...>" >&2; exit 2; }
     exec "$PODMAN" exec -it "$CNAME" "$@";;
   version|--version|-V)
     echo "magma control — service $SVC, image ${MAGMA_IMAGE:-?}, domain ${MAGMA_DOMAIN:-?}";;
   help|-h|--help)
-    sed -n '8,16p' "$0" | sed 's/^# \{0,1\}//';;
+    sed -n '8,19p' "$0" | sed 's/^# \{0,1\}//';;
   *)
     echo "magma: unknown command '$cmd' (try: magma help)" >&2; exit 2;;
 esac
