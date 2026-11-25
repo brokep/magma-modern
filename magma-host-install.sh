@@ -498,7 +498,7 @@ fi
 # ------------------------------------------------- 9d. dns + autoconfig ------
 # Install the DNS-push and mail-client autoconfig helpers as commands, and
 # generate the client autoconfig profiles now (so they're ready to serve/hand out).
-for tool in magma-dns.sh magma-autoconfig.sh; do
+for tool in magma-dns.sh magma-autoconfig.sh magma-domain.sh; do
   [ -f "$SRC/$tool" ] && run install -m 0755 "$SRC/$tool" "/usr/local/sbin/${tool%.sh}"
 done
 if [ -f "$SRC/magma-autoconfig.sh" ] && [ "$DRY" = no ]; then

@@ -63,6 +63,7 @@ LOGIN_WINDOW = 300  # throttle window
 LOGIN_MAX = 5       # max failed logins per IP per window
 USER_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")   # mail local-part we accept
 ADDR_RE = re.compile(r"^[A-Za-z0-9._%+-]{1,128}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,}$")  # alias address
+DOM_RE = re.compile(r"^[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,}$")  # a mail domain
 PLANS = ["BASIC", "PERSONAL", "ENHANCED", "PREMIUM", "STANDARD", "PREMIER"]
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 B32_RE = re.compile(r"^[A-Z2-7]+=*$")
@@ -394,6 +395,7 @@ class Handler(BaseHTTPRequestHandler):
                 "csrf": sess.get("csrf"),
                 "admin": CFG.get("MAGMA_ADMIN_USER", "admin"),
                 "domain": CFG.get("MAGMA_DOMAIN", ""),
+                "hostname": CFG.get("MAGMA_HOSTNAME", ""),
             })
         if path == "/api/overview":
             return self._json(200, self._overview())
@@ -401,6 +403,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"users": self._users()})
         if path == "/api/aliases":
             return self._json(200, {"aliases": self._aliases()})
+        if path == "/api/domains":
+            return self._json(200, {"domains": self._domains()})
         if path == "/api/backups":
             return self._json(200, self._backups())
         if path == "/api/autoconfig":
@@ -531,6 +535,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._alias_add(data)
         if path == "/api/aliases/delete":
             return self._alias_delete(data)
+        if path == "/api/domains/add":
+            return self._domain_add(data)
+        if path == "/api/domains/delete":
+            return self._domain_delete(data)
         if path == "/api/backups/run":
             return self._backup_run()
         if path == "/api/autoconfig/regen":
@@ -676,6 +684,53 @@ class Handler(BaseHTTPRequestHandler):
             if cnt == "1":
                 return self._json(400, {"error": "that is the user's only address"})
             db_query(f"DELETE FROM Mailboxes WHERE address='{addr}';")
+            return self._json(200, {"ok": True})
+        except Exception as e:  # noqa: BLE001
+            return self._json(500, {"error": str(e)})
+
+    # -- domains (host mail for more than one domain) -----------------------
+    def _domains(self):
+        primary = CFG.get("MAGMA_DOMAIN", "")
+        try:
+            out = db_query("SELECT domain, mailboxes, spf, dkim, wildcard FROM Domains ORDER BY domain;")
+        except Exception as e:  # noqa: BLE001
+            return [{"error": str(e)}]
+        rows = []
+        for line in out.splitlines():
+            p = line.split("\t")
+            if len(p) < 5 or not p[0]:
+                continue
+            rows.append({"domain": p[0], "mailboxes": p[1] == "1", "spf": p[2] == "1",
+                         "dkim": p[3] == "1", "wildcard": p[4] == "1",
+                         "primary": p[0].lower() == primary.lower()})
+        return rows
+
+    def _domain_add(self, data):
+        dom = (data.get("domain") or "").strip().lower()
+        if not DOM_RE.match(dom):
+            return self._json(400, {"error": "invalid domain"})
+        try:
+            if db_query(f"SELECT COUNT(*) FROM Domains WHERE domain='{dom}';").strip() != "0":
+                return self._json(409, {"error": "domain already present"})
+            # receiving + mailboxes; spf on, dkim off (single-key limitation)
+            db_query("INSERT INTO Domains (domain, restricted, mailboxes, wildcard, dkim, spf, created) "
+                     f"VALUES ('{dom}', 0, 1, 0, 0, 1, NOW());")
+            return self._json(200, {"ok": True})
+        except Exception as e:  # noqa: BLE001
+            return self._json(500, {"error": str(e)})
+
+    def _domain_delete(self, data):
+        dom = (data.get("domain") or "").strip().lower()
+        if not DOM_RE.match(dom):
+            return self._json(400, {"error": "invalid domain"})
+        if dom == CFG.get("MAGMA_DOMAIN", "").lower():
+            return self._json(400, {"error": "refusing to remove the primary domain"})
+        try:
+            n = db_query(f"SELECT COUNT(*) FROM Mailboxes WHERE address LIKE '%@{dom}';").strip()
+            if n != "0":
+                return self._json(400, {"error": f"{n} address(es) still use @{dom} — remove them first"})
+            db_query(f"DELETE FROM Mailboxes WHERE address='@{dom}';")
+            db_query(f"DELETE FROM Domains WHERE domain='{dom}';")
             return self._json(200, {"ok": True})
         except Exception as e:  # noqa: BLE001
             return self._json(500, {"error": str(e)})
@@ -959,19 +1014,19 @@ function renderApp(){
     <button id="logout">Sign out</button>
   </header>
   <nav>
-    ${[['overview','Overview'],['users','Users'],['aliases','Aliases'],['backups','Backups'],['clients','Mail clients'],['dns','DNS'],['status','Status'],['security','Security']].map(([t,label])=>`<button data-tab="${t}" class="${t===TAB?'on':''}">${label}</button>`).join('')}
+    ${[['overview','Overview'],['users','Users'],['aliases','Aliases'],['domains','Domains'],['backups','Backups'],['clients','Mail clients'],['dns','DNS'],['status','Status'],['security','Security']].map(([t,label])=>`<button data-tab="${t}" class="${t===TAB?'on':''}">${label}</button>`).join('')}
   </nav>
   <main id="view"></main>`;
   $('#logout').onclick=async()=>{ try{await api('/api/logout',{method:'POST'})}catch(e){}; CSRF=null; renderLogin(); };
   document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{TAB=b.dataset.tab; renderApp();});
-  ({overview:viewOverview,users:viewUsers,aliases:viewAliases,backups:viewBackups,clients:viewClients,dns:viewDns,status:viewStatus,security:viewSecurity}[TAB])();
+  ({overview:viewOverview,users:viewUsers,aliases:viewAliases,domains:viewDomains,backups:viewBackups,clients:viewClients,dns:viewDns,status:viewStatus,security:viewSecurity}[TAB])();
 }
 
 async function viewOverview(){
   const v=$('#view'); v.innerHTML='<p class="muted">Loading…</p>';
   try{
     const o = await api('/api/overview');
-    window.__DOMAIN = o.domain || window.__DOMAIN;
+    window.__DOMAIN = o.domain || window.__DOMAIN; window.__HOST = o.hostname || window.__HOST;
     const sa = o.service_active==='active';
     const cs = o.container_state==='running';
     const tls = o.tls||{};
@@ -1096,6 +1151,46 @@ async function viewAliases(){
   v.querySelectorAll('[data-da]').forEach(b=>b.onclick=async()=>{
     if(!confirm('Delete alias '+b.dataset.da+'? Mail to it will no longer be accepted.')) return;
     try{ await api('/api/aliases/delete',{method:'POST',body:JSON.stringify({address:b.dataset.da})}); viewAliases(); }
+    catch(e){ alert(e.message); }
+  });
+}
+
+async function viewDomains(){
+  const v=$('#view'); v.innerHTML='<p class="muted">Loading…</p>';
+  let d;
+  try{ d = await api('/api/domains'); }catch(e){ v.innerHTML=`<div class="msg err" style="display:block">${esc(e.message)}</div>`; return; }
+  const yn = b => b?'<span class="ok">yes</span>':'<span class="muted">no</span>';
+  const rows = (d.domains||[]).map(x=>{
+    if(x.error) return `<tr><td colspan="6" class="bad">${esc(x.error)}</td></tr>`;
+    return `<tr>
+      <td>${esc(x.domain)}${x.primary?' <span class="pill">primary</span>':''}</td>
+      <td>${yn(x.mailboxes)}</td><td>${yn(x.spf)}</td>
+      <td>${x.dkim?'<span class="ok">yes</span>':'<span class="warn">no</span>'}</td>
+      <td>${yn(x.wildcard)}</td>
+      <td class="r">${x.primary?'':`<button class="danger" data-dd="${esc(x.domain)}">Remove</button>`}</td>
+    </tr>`;
+  }).join('');
+  v.innerHTML = `
+  <div class="card"><h2>Add domain</h2>
+    <p class="muted" style="margin:0 0 12px">Receive and host mailboxes for another domain. Point its MX at ${esc(window.__HOST||'this host')} and publish SPF/DMARC. <b>DKIM is signed only for the primary domain</b> (single-key limit), so secondary domains are added with dkim=no.</p>
+    <div id="dmmsg" class="msg"></div>
+    <div class="row">
+      <div><label>Domain</label><input id="dn" placeholder="example.net"></div>
+      <div style="flex:0 0 auto"><button class="primary" id="dadd">Add</button></div>
+    </div>
+  </div>
+  <div class="card"><h2>Domains</h2>
+    <table><thead><tr><th>Domain</th><th>Mailboxes</th><th>SPF</th><th>DKIM</th><th>Catch-all</th><th></th></tr></thead>
+    <tbody>${rows||'<tr><td colspan="6" class="muted">No domains.</td></tr>'}</tbody></table>
+  </div>`;
+  $('#dadd').onclick=async()=>{
+    const m=$('#dmmsg'); m.className='msg';
+    try{ await api('/api/domains/add',{method:'POST',body:JSON.stringify({domain:$('#dn').value.trim()})}); viewDomains(); }
+    catch(e){ m.className='msg err'; m.textContent=e.message; }
+  };
+  v.querySelectorAll('[data-dd]').forEach(b=>b.onclick=async()=>{
+    if(!confirm('Remove domain '+b.dataset.dd+'? Mail to it will no longer be accepted.')) return;
+    try{ await api('/api/domains/delete',{method:'POST',body:JSON.stringify({domain:b.dataset.dd})}); viewDomains(); }
     catch(e){ alert(e.message); }
   });
 }
@@ -1242,7 +1337,7 @@ async function viewDns(){
 
 // bootstrap: recover an existing session (cookie is HttpOnly, so fetch the CSRF token back)
 (async()=>{
-  try{ const s=await api('/api/session'); CSRF=s.csrf; USER=s.user; window.__ADMIN=s.admin; window.__DOMAIN=s.domain; renderApp(); }
+  try{ const s=await api('/api/session'); CSRF=s.csrf; USER=s.user; window.__ADMIN=s.admin; window.__DOMAIN=s.domain; window.__HOST=s.hostname; renderApp(); }
   catch(e){ renderLogin(); }
 })();
 </script>

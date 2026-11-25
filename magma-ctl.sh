@@ -14,6 +14,7 @@
 #   magma backup [sub]    encrypted backups: backup|list|restore <file>
 #   magma dns [sub]       publish DNS records: plan|push --provider <p>
 #   magma autoconfig      (re)generate mail-client autoconfig profiles
+#   magma domain [sub]    host more domains: list|add <d>|remove <d>
 #   magma exec <cmd...>   run a command inside the container
 #   magma version | help
 # =============================================================================
@@ -73,13 +74,18 @@ case "$cmd" in
     AC="$(command -v magma-autoconfig || echo "$SRC/magma-autoconfig.sh")"
     need "$AC"
     exec "$AC" --config "$CONF" "$@";;
+  domain)
+    # magma domain [list|add|remove] — host mail for additional domains
+    DM="$(command -v magma-domain || echo "$SRC/magma-domain.sh")"
+    need "$DM"
+    exec "$DM" "$@" --config "$CONF";;
   exec)
     [ $# -gt 0 ] || { echo "usage: magma exec <command...>" >&2; exit 2; }
     exec "$PODMAN" exec -it "$CNAME" "$@";;
   version|--version|-V)
     echo "magma control — service $SVC, image ${MAGMA_IMAGE:-?}, domain ${MAGMA_DOMAIN:-?}";;
   help|-h|--help)
-    sed -n '8,19p' "$0" | sed 's/^# \{0,1\}//';;
+    sed -n '8,20p' "$0" | sed 's/^# \{0,1\}//';;
   *)
     echo "magma: unknown command '$cmd' (try: magma help)" >&2; exit 2;;
 esac
