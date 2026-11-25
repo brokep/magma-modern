@@ -10,9 +10,13 @@
 # What it gives an operator (the Mail-in-a-Box admin panel, Magma edition):
 #   * Overview   — service/container health, TLS cert, account count.
 #   * Users      — list / add / delete mail accounts, reset a locked-out password.
+#   * Aliases    — extra addresses that deliver to an account (DB-level).
+#   * Backups    — view/trigger the encrypted backups (magma-backup.sh).
+#   * Mail clients — download the generated autoconfig / .mobileconfig profiles.
+#   * DNS        — the SPF/DKIM/DMARC records, and one-click push to a provider.
 #   * Status     — the magma-status.sh deliverability checks, in the browser.
-#   * DNS        — the SPF/DKIM/DMARC records to publish.
-#   * Restart    — bounce the mail server.
+#   * Security   — enable/disable TOTP two-factor on the panel login.
+#   * Restart    — bounce the mail server (Overview tab).
 #
 # How it talks to Magma (all the P1-P4 findings, reused):
 #   * Account ops go through Magma's OWN JSON-RPC methods (register / auth /
@@ -58,8 +62,10 @@ SESSION_TTL = 3600  # seconds
 LOGIN_WINDOW = 300  # throttle window
 LOGIN_MAX = 5       # max failed logins per IP per window
 USER_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")   # mail local-part we accept
+ADDR_RE = re.compile(r"^[A-Za-z0-9._%+-]{1,128}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,}$")  # alias address
 PLANS = ["BASIC", "PERSONAL", "ENHANCED", "PREMIUM", "STANDARD", "PREMIER"]
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+B32_RE = re.compile(r"^[A-Z2-7]+=*$")
 
 _login_fails = {}          # ip -> [timestamps]
 _login_lock = threading.Lock()
@@ -113,6 +119,54 @@ def load_secret(cfg):
     finally:
         os.umask(old)
     return data
+
+
+# ----------------------------------------------------------------- totp ------
+def _config_dir():
+    sd = CFG.get("MAGMA_SECRETS_DIR", "/etc/magma")
+    return os.path.dirname(sd.rstrip("/")) or "/etc/magma"
+
+
+def _totp_path():
+    return os.path.join(_config_dir(), ".admin-totp")
+
+
+def totp_secret():
+    """The enrolled base32 TOTP secret, or '' if 2FA is not set up."""
+    try:
+        with open(_totp_path()) as fh:
+            s = fh.read().strip().upper().replace(" ", "")
+            return s if B32_RE.match(s) else ""
+    except OSError:
+        return ""
+
+
+def _b32decode(s):
+    s = s.strip().upper().replace(" ", "")
+    pad = (-len(s)) % 8
+    return base64.b32decode(s + "=" * pad)
+
+
+def totp_now(secret, t=None, step=30, digits=6):
+    key = _b32decode(secret)
+    counter = int((t if t is not None else time.time()) // step)
+    msg = counter.to_bytes(8, "big")
+    h = hmac.new(key, msg, hashlib.sha1).digest()
+    o = h[-1] & 0x0F
+    code = ((h[o] & 0x7F) << 24 | h[o + 1] << 16 | h[o + 2] << 8 | h[o + 3]) % (10 ** digits)
+    return str(code).zfill(digits)
+
+
+def totp_check(secret, code, window=1):
+    """Verify a 6-digit code, tolerating +/- one 30s step for clock drift."""
+    code = (code or "").strip().replace(" ", "")
+    if not code.isdigit():
+        return False
+    now = time.time()
+    for w in range(-window, window + 1):
+        if hmac.compare_digest(totp_now(secret, now + w * 30), code):
+            return True
+    return False
 
 
 # ------------------------------------------------------- magma plumbing ------
@@ -310,6 +364,16 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(resp, dict) or "jsonrpc" not in resp or "error" in resp:
             record_fail(ip)
             return self._json(401, {"error": "invalid credentials"})
+        # Second factor: if a TOTP secret is enrolled, the password alone is not
+        # enough. (We only reach here once the password itself has checked out.)
+        sec = totp_secret()
+        if sec:
+            code = data.get("code") or ""
+            if not code:
+                return self._json(401, {"error": "enter your 6-digit code", "twofa": True})
+            if not totp_check(sec, code):
+                record_fail(ip)
+                return self._json(401, {"error": "invalid 2FA code", "twofa": True})
         csrf = secrets.token_hex(16)
         token = sign({"user": user, "csrf": csrf, "exp": int(time.time()) + SESSION_TTL})
         cookie = (
@@ -329,11 +393,22 @@ class Handler(BaseHTTPRequestHandler):
                 "user": sess.get("user"),
                 "csrf": sess.get("csrf"),
                 "admin": CFG.get("MAGMA_ADMIN_USER", "admin"),
+                "domain": CFG.get("MAGMA_DOMAIN", ""),
             })
         if path == "/api/overview":
             return self._json(200, self._overview())
         if path == "/api/users":
             return self._json(200, {"users": self._users()})
+        if path == "/api/aliases":
+            return self._json(200, {"aliases": self._aliases()})
+        if path == "/api/backups":
+            return self._json(200, self._backups())
+        if path == "/api/autoconfig":
+            return self._json(200, self._autoconfig())
+        if path == "/api/autoconfig/download":
+            return self._autoconfig_download(self.path)
+        if path == "/api/2fa/status":
+            return self._twofa_status()
         if path == "/api/status":
             return self._json(200, {"text": self._status()})
         if path == "/api/dns":
@@ -452,6 +527,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._user_delete(data)
         if path == "/api/users/reset-password":
             return self._user_reset_pw(data)
+        if path == "/api/aliases/add":
+            return self._alias_add(data)
+        if path == "/api/aliases/delete":
+            return self._alias_delete(data)
+        if path == "/api/backups/run":
+            return self._backup_run()
+        if path == "/api/autoconfig/regen":
+            return self._autoconfig_regen()
+        if path == "/api/dns/push":
+            return self._dns_push(data)
+        if path == "/api/2fa/enroll":
+            return self._twofa_enroll(sess)
+        if path == "/api/2fa/confirm":
+            return self._twofa_confirm(data)
+        if path == "/api/2fa/disable":
+            return self._twofa_disable(data)
         if path == "/api/service/restart":
             return self._service_restart()
         return self._json(404, {"error": "unknown endpoint"})
@@ -516,6 +607,211 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True})
         except Exception as e:  # noqa: BLE001
             return self._json(500, {"error": str(e)})
+
+    # -- aliases (extra Mailboxes addresses that deliver to a user) ----------
+    def _aliases(self):
+        # Every row in Mailboxes delivers to its usernum. The "primary" address
+        # is the one created at registration (userid@domain); anything else is
+        # an alias. We mark the primary so it can't be deleted here.
+        dom = CFG.get("MAGMA_DOMAIN", "")
+        sql = ("SELECT m.address, u.userid FROM Mailboxes m "
+               "JOIN Users u ON m.usernum=u.usernum ORDER BY u.userid, m.address;")
+        try:
+            out = db_query(sql)
+        except Exception as e:  # noqa: BLE001
+            return [{"error": str(e)}]
+        rows = []
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            addr, uid = parts[0], parts[1]
+            primary = addr.lower() == f"{uid}@{dom}".lower()
+            rows.append({"address": addr, "userid": uid, "primary": primary})
+        return rows
+
+    def _alias_add(self, data):
+        addr = (data.get("address") or "").strip().lower()
+        target = (data.get("userid") or "").strip()
+        if not ADDR_RE.match(addr):
+            return self._json(400, {"error": "invalid address (use name@domain)"})
+        if not USER_RE.match(target):
+            return self._json(400, {"error": "invalid target user"})
+        dom = addr.split("@", 1)[1]
+        # only accept aliases in domains Magma is configured to handle
+        try:
+            known = db_query("SELECT domain FROM Domains;").split()
+        except Exception:  # noqa: BLE001
+            known = []
+        allowed = {d.lower() for d in known} | {CFG.get("MAGMA_DOMAIN", "").lower()}
+        if dom not in allowed:
+            return self._json(400, {"error": f"domain '{dom}' is not served here (add it under Domains first)"})
+        try:
+            unum = db_query(f"SELECT usernum FROM Users WHERE userid='{target}';").strip()
+            if not unum.isdigit():
+                return self._json(422, {"error": "no such target user"})
+            taken = db_query(f"SELECT COUNT(*) FROM Mailboxes WHERE address='{addr}';").strip()
+            if taken != "0":
+                return self._json(409, {"error": "that address already exists"})
+            db_query(f"INSERT INTO Mailboxes (address, usernum) VALUES ('{addr}', {unum});")
+            return self._json(200, {"ok": True})
+        except Exception as e:  # noqa: BLE001
+            return self._json(500, {"error": str(e)})
+
+    def _alias_delete(self, data):
+        addr = (data.get("address") or "").strip().lower()
+        if not ADDR_RE.match(addr):
+            return self._json(400, {"error": "invalid address"})
+        dom = CFG.get("MAGMA_DOMAIN", "")
+        try:
+            row = db_query("SELECT u.userid FROM Mailboxes m JOIN Users u ON m.usernum=u.usernum "
+                           f"WHERE m.address='{addr}';").strip()
+            if not row:
+                return self._json(422, {"error": "no such address"})
+            if addr == f"{row}@{dom}".lower():
+                return self._json(400, {"error": "refusing to delete a user's primary address"})
+            # don't orphan a user: keep at least one mailbox
+            unum = db_query(f"SELECT usernum FROM Mailboxes WHERE address='{addr}';").strip()
+            cnt = db_query(f"SELECT COUNT(*) FROM Mailboxes WHERE usernum={unum};").strip()
+            if cnt == "1":
+                return self._json(400, {"error": "that is the user's only address"})
+            db_query(f"DELETE FROM Mailboxes WHERE address='{addr}';")
+            return self._json(200, {"ok": True})
+        except Exception as e:  # noqa: BLE001
+            return self._json(500, {"error": str(e)})
+
+    # -- backups ------------------------------------------------------------
+    def _backups(self):
+        bdir = CFG.get("MAGMA_BACKUP_DIR", "/var/backups/magma")
+        items = []
+        try:
+            for fn in sorted(os.listdir(bdir), reverse=True):
+                if fn.startswith("magma-") and fn.endswith(".tar.gz.gpg"):
+                    p = os.path.join(bdir, fn)
+                    st = os.stat(p)
+                    items.append({"name": fn, "size": st.st_size, "mtime": int(st.st_mtime)})
+        except OSError:
+            pass
+        svc = CFG.get("MAGMA_SERVICE", "magma") + "-backup"
+        _, tstate, _ = run(["systemctl", "is-enabled", svc + ".timer"], timeout=5)
+        _, nxt, _ = run(["systemctl", "show", svc + ".timer", "-p", "NextElapseUSecRealtime", "--value"], timeout=5)
+        return {"dir": bdir, "backups": items, "timer": tstate.strip(), "next": nxt.strip()}
+
+    def _backup_run(self):
+        # Fire the oneshot backup service so a long run doesn't block the panel.
+        svc = CFG.get("MAGMA_SERVICE", "magma") + "-backup.service"
+        rc, _, err = run(["systemctl", "start", "--no-block", svc], timeout=15)
+        if rc == 0:
+            return self._json(200, {"ok": True, "started": svc})
+        # fall back to running the script directly if the unit isn't installed
+        script = os.path.join(CFG.get("MAGMA_INSTALL_DIR", "/opt/magma"), "src", "magma-backup.sh")
+        if os.path.exists(script):
+            rc2, _, err2 = run([script, "backup", "--config",
+                                os.path.join(_config_dir(), "magma.conf")], timeout=600)
+            if rc2 == 0:
+                return self._json(200, {"ok": True})
+            return self._json(500, {"error": err2.strip() or "backup failed"})
+        return self._json(500, {"error": err.strip() or "could not start backup"})
+
+    # -- mail-client autoconfig --------------------------------------------
+    def _autoconfig(self):
+        base = os.path.join(CFG.get("MAGMA_SECRETS_DIR", ""), "autoconfig")
+        files = []
+        for rel in ("mail/config-v1.1.xml", "autodiscover/autodiscover.xml",
+                    f"magma-{CFG.get('MAGMA_DOMAIN','')}.mobileconfig",
+                    "nginx-autoconfig.conf", "Caddyfile.autoconfig"):
+            p = os.path.join(base, rel)
+            if os.path.exists(p):
+                files.append({"name": rel, "size": os.path.getsize(p)})
+        return {"present": os.path.isdir(base), "domain": CFG.get("MAGMA_DOMAIN", ""),
+                "hostname": CFG.get("MAGMA_HOSTNAME", ""), "files": files}
+
+    def _autoconfig_regen(self):
+        script = os.path.join(CFG.get("MAGMA_INSTALL_DIR", "/opt/magma"), "src", "magma-autoconfig.sh")
+        if not os.path.exists(script):
+            return self._json(500, {"error": "magma-autoconfig.sh not found"})
+        rc, _, err = run([script, "--config", os.path.join(_config_dir(), "magma.conf")], timeout=30)
+        return self._json(200 if rc == 0 else 500, {"ok": rc == 0} if rc == 0 else {"error": err.strip()})
+
+    def _autoconfig_download(self, path):
+        base = os.path.realpath(os.path.join(CFG.get("MAGMA_SECRETS_DIR", ""), "autoconfig"))
+        rel = path.split("file=", 1)[1] if "file=" in path else ""
+        from urllib.parse import unquote
+        rel = unquote(rel)
+        full = os.path.realpath(os.path.join(base, rel))
+        if not full.startswith(base + os.sep) or not os.path.isfile(full):
+            return self._send(404, "not found\n", "text/plain")
+        ctype = "application/octet-stream"
+        if full.endswith(".mobileconfig"):
+            ctype = "application/x-apple-aspen-config"
+        elif full.endswith(".xml"):
+            ctype = "application/xml"
+        elif full.endswith(".conf") or full.endswith("Caddyfile.autoconfig"):
+            ctype = "text/plain"
+        try:
+            with open(full, "rb") as fh:
+                body = fh.read()
+        except OSError:
+            return self._send(404, "not found\n", "text/plain")
+        return self._send(200, body, ctype, extra=[(
+            "Content-Disposition", f'attachment; filename="{os.path.basename(full)}"')])
+
+    # -- DNS push -----------------------------------------------------------
+    def _dns_push(self, data):
+        provider = (data.get("provider") or "manual").strip()
+        if provider not in ("cloudflare", "route53", "manual"):
+            return self._json(400, {"error": "provider must be cloudflare, route53, or manual"})
+        script = os.path.join(CFG.get("MAGMA_INSTALL_DIR", "/opt/magma"), "src", "magma-dns.sh")
+        if not os.path.exists(script):
+            return self._json(500, {"error": "magma-dns.sh not found"})
+        rc, out, err = run([script, "push", "--provider", provider,
+                            "--config", os.path.join(_config_dir(), "magma.conf")], timeout=60)
+        text = ANSI_RE.sub("", out + ("\n" + err if err.strip() else ""))
+        return self._json(200 if rc == 0 else 500, {"ok": rc == 0, "text": text})
+
+    # -- 2FA (TOTP) enrollment ----------------------------------------------
+    def _twofa_status(self):
+        return self._json(200, {"enabled": bool(totp_secret())})
+
+    def _twofa_enroll(self, sess):
+        # Generate a fresh secret, stash it as PENDING in the session-signed
+        # response; it only becomes active after _twofa_confirm writes the file.
+        secret = base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
+        issuer = "Magma admin"
+        label = f"{sess.get('user','admin')}@{CFG.get('MAGMA_DOMAIN','')}"
+        from urllib.parse import quote
+        uri = (f"otpauth://totp/{quote(issuer)}:{quote(label)}?secret={secret}"
+               f"&issuer={quote(issuer)}&period=30&digits=6")
+        return self._json(200, {"secret": secret, "otpauth": uri})
+
+    def _twofa_confirm(self, data):
+        secret = (data.get("secret") or "").strip().upper()
+        code = (data.get("code") or "").strip()
+        if not B32_RE.match(secret):
+            return self._json(400, {"error": "invalid secret"})
+        if not totp_check(secret, code):
+            return self._json(400, {"error": "code did not verify — check the time on your device"})
+        path = _totp_path()
+        old = os.umask(0o077)
+        try:
+            with open(path, "w") as fh:
+                fh.write(secret + "\n")
+        except OSError as e:
+            return self._json(500, {"error": str(e)})
+        finally:
+            os.umask(old)
+        return self._json(200, {"ok": True})
+
+    def _twofa_disable(self, data):
+        # require a current valid code to turn 2FA off
+        sec = totp_secret()
+        if sec and not totp_check(sec, (data.get("code") or "")):
+            return self._json(400, {"error": "a current code is required to disable 2FA"})
+        try:
+            os.remove(_totp_path())
+        except OSError:
+            pass
+        return self._json(200, {"ok": True})
 
     def _user_reset_pw(self, data):
         user = (data.get("username") or "").strip()
@@ -631,19 +927,26 @@ function renderLogin(err){
     <p class="muted" style="margin:0 0 18px">Sign in with the admin mail account.</p>
     <div id="m" class="msg ${err?'err':''}">${esc(err||'')}</div>
     <div style="margin-bottom:12px"><label>Admin username</label><input id="u" autofocus autocomplete="username"></div>
-    <div style="margin-bottom:16px"><label>Password</label><input id="p" type="password" autocomplete="current-password"></div>
+    <div style="margin-bottom:12px"><label>Password</label><input id="p" type="password" autocomplete="current-password"></div>
+    <div id="twofa" style="display:none;margin-bottom:16px"><label>Two-factor code</label><input id="code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456"></div>
     <button class="primary" style="width:100%" id="go">Sign in</button>
   </div></div>`;
   const submit = async ()=>{
     const m=$('#m'); m.className='msg';
+    const body = {username:$('#u').value, password:$('#p').value};
+    const codeEl = $('#code'); if(codeEl && codeEl.value.trim()) body.code = codeEl.value.trim();
     try{
-      const j = await api('/api/login',{method:'POST',body:JSON.stringify({username:$('#u').value,password:$('#p').value})});
-      CSRF=j.csrf; USER=j.user; renderApp();
+      const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const j = await r.json().catch(()=>({}));
+      if(r.ok){ CSRF=j.csrf; USER=j.user; renderApp(); return; }
+      if(j.twofa){ $('#twofa').style.display='block'; $('#code').focus(); }
+      m.className='msg err'; m.textContent=j.error||('HTTP '+r.status);
     }catch(e){ m.className='msg err'; m.textContent=e.message; }
   };
   $('#go').onclick=submit;
   $('#p').onkeydown=e=>{ if(e.key==='Enter') submit(); };
   $('#u').onkeydown=e=>{ if(e.key==='Enter') $('#p').focus(); };
+  document.addEventListener('keydown',e=>{ if(e.key==='Enter' && document.activeElement && document.activeElement.id==='code') submit(); });
 }
 
 let TAB='overview';
@@ -656,18 +959,19 @@ function renderApp(){
     <button id="logout">Sign out</button>
   </header>
   <nav>
-    ${['overview','users','status','dns'].map(t=>`<button data-tab="${t}" class="${t===TAB?'on':''}">${t[0].toUpperCase()+t.slice(1)}</button>`).join('')}
+    ${[['overview','Overview'],['users','Users'],['aliases','Aliases'],['backups','Backups'],['clients','Mail clients'],['dns','DNS'],['status','Status'],['security','Security']].map(([t,label])=>`<button data-tab="${t}" class="${t===TAB?'on':''}">${label}</button>`).join('')}
   </nav>
   <main id="view"></main>`;
   $('#logout').onclick=async()=>{ try{await api('/api/logout',{method:'POST'})}catch(e){}; CSRF=null; renderLogin(); };
   document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{TAB=b.dataset.tab; renderApp();});
-  ({overview:viewOverview,users:viewUsers,status:viewStatus,dns:viewDns}[TAB])();
+  ({overview:viewOverview,users:viewUsers,aliases:viewAliases,backups:viewBackups,clients:viewClients,dns:viewDns,status:viewStatus,security:viewSecurity}[TAB])();
 }
 
 async function viewOverview(){
   const v=$('#view'); v.innerHTML='<p class="muted">Loading…</p>';
   try{
     const o = await api('/api/overview');
+    window.__DOMAIN = o.domain || window.__DOMAIN;
     const sa = o.service_active==='active';
     const cs = o.container_state==='running';
     const tls = o.tls||{};
@@ -756,6 +1060,153 @@ async function viewUsers(){
   });
 }
 
+async function viewAliases(){
+  const v=$('#view'); v.innerHTML='<p class="muted">Loading…</p>';
+  let data, users;
+  try{ data = await api('/api/aliases'); users = await api('/api/users'); }
+  catch(e){ v.innerHTML=`<div class="msg err" style="display:block">${esc(e.message)}</div>`; return; }
+  const ulist = (users.users||[]).filter(u=>!u.error).map(u=>u.userid);
+  const rows = (data.aliases||[]).map(a=>{
+    if(a.error) return `<tr><td colspan="4" class="bad">${esc(a.error)}</td></tr>`;
+    return `<tr>
+      <td>${esc(a.address)}${a.primary?' <span class="pill">primary</span>':''}</td>
+      <td>${esc(a.userid)}</td>
+      <td class="r">${a.primary?'':`<button class="danger" data-da="${esc(a.address)}">Delete</button>`}</td>
+    </tr>`;
+  }).join('');
+  v.innerHTML = `
+  <div class="card"><h2>Add alias</h2>
+    <p class="muted" style="margin:0 0 12px">An alias is an extra address that delivers to an existing account (e.g. <code>sales@…</code> → alice). Forwarding to outside addresses isn't supported.</p>
+    <div id="almsg" class="msg"></div>
+    <div class="row">
+      <div><label>Alias address</label><input id="aa" placeholder="sales@${esc(window.__DOMAIN||'example.com')}"></div>
+      <div style="flex:0 0 220px"><label>Delivers to</label><select id="at">${ulist.map(u=>`<option>${esc(u)}</option>`).join('')}</select></div>
+      <div style="flex:0 0 auto"><button class="primary" id="aadd">Add</button></div>
+    </div>
+  </div>
+  <div class="card"><h2>Addresses</h2>
+    <table><thead><tr><th>Address</th><th>Delivers to</th><th></th></tr></thead>
+    <tbody>${rows||'<tr><td colspan="3" class="muted">No addresses.</td></tr>'}</tbody></table>
+  </div>`;
+  $('#aadd').onclick=async()=>{
+    const m=$('#almsg'); m.className='msg';
+    try{ await api('/api/aliases/add',{method:'POST',body:JSON.stringify({address:$('#aa').value.trim(),userid:$('#at').value})}); viewAliases(); }
+    catch(e){ m.className='msg err'; m.textContent=e.message; }
+  };
+  v.querySelectorAll('[data-da]').forEach(b=>b.onclick=async()=>{
+    if(!confirm('Delete alias '+b.dataset.da+'? Mail to it will no longer be accepted.')) return;
+    try{ await api('/api/aliases/delete',{method:'POST',body:JSON.stringify({address:b.dataset.da})}); viewAliases(); }
+    catch(e){ alert(e.message); }
+  });
+}
+
+async function viewBackups(){
+  const v=$('#view'); v.innerHTML='<p class="muted">Loading…</p>';
+  let d;
+  try{ d = await api('/api/backups'); }catch(e){ v.innerHTML=`<div class="msg err" style="display:block">${esc(e.message)}</div>`; return; }
+  const rows = (d.backups||[]).map(b=>`<tr><td>${esc(b.name)}</td><td class="r">${bytes(b.size)}</td><td class="r muted">${new Date(b.mtime*1000).toLocaleString()}</td></tr>`).join('');
+  const timer = d.timer==='enabled'?'<span class="ok">enabled</span>':'<span class="warn">'+esc(d.timer||'not installed')+'</span>';
+  v.innerHTML = `
+  <div class="card"><h2>Backups</h2>
+    <div id="bmsg" class="msg"></div>
+    <div class="grid" style="margin-bottom:14px">
+      <div class="kv"><div class="k">Scheduled timer</div><div class="v">${timer}</div></div>
+      <div class="kv"><div class="k">Local copies</div><div class="v">${(d.backups||[]).length}</div></div>
+      <div class="kv"><div class="k">Directory</div><div class="v" style="font-size:13px">${esc(d.dir)}</div></div>
+    </div>
+    <button class="primary" id="brun">Back up now</button>
+    <span class="muted" style="margin-left:10px">Encrypted (gpg). Keep the passphrase (<code>.backup-pass</code>) off-box or restores are impossible.</span>
+  </div>
+  <div class="card"><h2>Archives</h2>
+    <table><thead><tr><th>File</th><th class="r">Size</th><th class="r">Created</th></tr></thead>
+    <tbody>${rows||'<tr><td colspan="3" class="muted">No backups yet.</td></tr>'}</tbody></table>
+  </div>`;
+  $('#brun').onclick=async()=>{
+    const m=$('#bmsg'); m.className='msg'; $('#brun').disabled=true; $('#brun').textContent='Starting…';
+    try{ await api('/api/backups/run',{method:'POST'}); m.className='msg ok'; m.textContent='Backup started — refresh in a minute to see it.'; }
+    catch(e){ m.className='msg err'; m.textContent=e.message; }
+    $('#brun').disabled=false; $('#brun').textContent='Back up now';
+  };
+}
+
+async function viewClients(){
+  const v=$('#view'); v.innerHTML='<p class="muted">Loading…</p>';
+  let d;
+  try{ d = await api('/api/autoconfig'); }catch(e){ v.innerHTML=`<div class="msg err" style="display:block">${esc(e.message)}</div>`; return; }
+  const dl = f => `/api/autoconfig/download?file=${encodeURIComponent(f)}`;
+  const files = (d.files||[]).map(f=>`<tr><td>${esc(f.name)}</td><td class="r">${bytes(f.size)}</td><td class="r"><a href="${dl(f.name)}">download</a></td></tr>`).join('');
+  v.innerHTML = `
+  <div class="card"><h2>Mail client setup</h2>
+    <div id="cmsg" class="msg"></div>
+    <p class="muted" style="margin:0 0 12px">Autoconfig for <b>${esc(d.domain)}</b> (server ${esc(d.hostname)}). The Apple <code>.mobileconfig</code> works as-is — hand it to a user and they tap to install. Thunderbird/Outlook auto-fetch needs the XML served on <code>autoconfig.${esc(d.domain)}</code> / <code>autodiscover.${esc(d.domain)}</code> (see the nginx/Caddy snippet).</p>
+    <button id="cregen">Regenerate</button>
+  </div>
+  <div class="card"><h2>Files</h2>
+    <table><thead><tr><th>File</th><th class="r">Size</th><th></th></tr></thead>
+    <tbody>${files||'<tr><td colspan="3" class="muted">Not generated yet — click Regenerate.</td></tr>'}</tbody></table>
+  </div>`;
+  $('#cregen').onclick=async()=>{
+    const m=$('#cmsg'); m.className='msg';
+    try{ await api('/api/autoconfig/regen',{method:'POST'}); viewClients(); }
+    catch(e){ m.className='msg err'; m.textContent=e.message; }
+  };
+}
+
+async function viewSecurity(){
+  const v=$('#view'); v.innerHTML='<p class="muted">Loading…</p>';
+  let s;
+  try{ s = await api('/api/2fa/status'); }catch(e){ v.innerHTML=`<div class="msg err" style="display:block">${esc(e.message)}</div>`; return; }
+  if(s.enabled){
+    v.innerHTML = `
+    <div class="card"><h2>Two-factor authentication</h2>
+      <div id="smsg" class="msg"></div>
+      <p><span class="ok">● Enabled.</span> A TOTP code is required at sign-in.</p>
+      <div class="row">
+        <div style="flex:0 0 160px"><label>Current code</label><input id="dcode" inputmode="numeric" autocomplete="one-time-code" placeholder="123456"></div>
+        <div style="flex:0 0 auto"><button class="danger" id="disable">Disable 2FA</button></div>
+      </div>
+    </div>`;
+    $('#disable').onclick=async()=>{
+      const m=$('#smsg'); m.className='msg';
+      try{ await api('/api/2fa/disable',{method:'POST',body:JSON.stringify({code:$('#dcode').value.trim()})}); viewSecurity(); }
+      catch(e){ m.className='msg err'; m.textContent=e.message; }
+    };
+    return;
+  }
+  v.innerHTML = `
+  <div class="card"><h2>Two-factor authentication</h2>
+    <div id="smsg" class="msg"></div>
+    <p class="muted">Protect the panel with a TOTP app (Google Authenticator, 1Password, …). The panel login will then require a 6-digit code in addition to the admin password.</p>
+    <button class="primary" id="enroll">Set up 2FA</button>
+  </div>`;
+  $('#enroll').onclick=async()=>{
+    const m=$('#smsg'); m.className='msg';
+    try{
+      const e = await api('/api/2fa/enroll',{method:'POST'});
+      $('#view').innerHTML = `
+      <div class="card"><h2>Finish 2FA setup</h2>
+        <div id="smsg2" class="msg"></div>
+        <p class="muted">Add this to your authenticator app, then type the current code to confirm. (No QR image — the secret is never sent to any third-party service; enter it manually or paste the otpauth link into an app that accepts it.)</p>
+        <div style="margin:8px 0 16px">
+          <label>Secret (type into your app)</label><pre style="margin:4px 0 12px;letter-spacing:1px">${esc(e.secret)}</pre>
+          <label>Or this otpauth link</label><pre style="margin:4px 0">${esc(e.otpauth)}</pre>
+        </div>
+        <div class="row">
+          <div style="flex:0 0 160px"><label>Code from app</label><input id="ccode" inputmode="numeric" autocomplete="one-time-code" placeholder="123456"></div>
+          <div style="flex:0 0 auto"><button class="primary" id="confirm">Confirm & enable</button></div>
+          <div style="flex:0 0 auto"><button id="cancel2">Cancel</button></div>
+        </div>
+      </div>`;
+      $('#confirm').onclick=async()=>{
+        const m2=$('#smsg2'); m2.className='msg';
+        try{ await api('/api/2fa/confirm',{method:'POST',body:JSON.stringify({secret:e.secret,code:$('#ccode').value.trim()})}); viewSecurity(); }
+        catch(err){ m2.className='msg err'; m2.textContent=err.message; }
+      };
+      $('#cancel2').onclick=viewSecurity;
+    }catch(e){ m.className='msg err'; m.textContent=e.message; }
+  };
+}
+
 async function viewStatus(){
   const v=$('#view'); v.innerHTML='<p class="muted">Running deliverability checks… (this makes live DNS/network queries)</p>';
   try{ const j=await api('/api/status'); v.innerHTML=`<div class="card"><div class="toolbar"><h2 style="margin:0">Deliverability</h2><div class="sp" style="flex:1"></div><button id="re">Re-run</button></div><pre>${esc(j.text)}</pre></div>`;
@@ -765,13 +1216,33 @@ async function viewStatus(){
 
 async function viewDns(){
   const v=$('#view'); v.innerHTML='<p class="muted">Loading…</p>';
-  try{ const j=await api('/api/dns'); v.innerHTML=`<div class="card"><h2>DNS records to publish</h2><pre>${esc(j.text)}</pre></div>`; }
-  catch(e){ v.innerHTML=`<div class="msg err" style="display:block">${esc(e.message)}</div>`; }
+  let j;
+  try{ j=await api('/api/dns'); }catch(e){ v.innerHTML=`<div class="msg err" style="display:block">${esc(e.message)}</div>`; return; }
+  v.innerHTML=`
+    <div class="card"><h2>Publish automatically</h2>
+      <div id="dmsg" class="msg"></div>
+      <p class="muted" style="margin:0 0 12px">Push the full mail record set (A, MX, SPF, DKIM, DMARC, autoconfig) to your provider. Cloudflare needs <code>MAGMA_CF_TOKEN</code> in magma.conf; Route 53 uses the host's AWS credentials.</p>
+      <div class="row">
+        <div style="flex:0 0 200px"><label>Provider</label><select id="prov"><option value="cloudflare">Cloudflare</option><option value="route53">Route 53</option><option value="manual">Manual (print zone)</option></select></div>
+        <div style="flex:0 0 auto"><button class="primary" id="push">Push records</button></div>
+      </div>
+      <pre id="pushout" style="display:none;margin-top:12px"></pre>
+    </div>
+    <div class="card"><h2>Records (from dns-records.txt)</h2><pre>${esc(j.text)}</pre></div>`;
+  $('#push').onclick=async()=>{
+    const m=$('#dmsg'); m.className='msg'; const b=$('#push'); b.disabled=true; b.textContent='Pushing…';
+    try{
+      const r=await api('/api/dns/push',{method:'POST',body:JSON.stringify({provider:$('#prov').value})});
+      const o=$('#pushout'); o.style.display='block'; o.textContent=r.text||'';
+      m.className='msg '+(r.ok?'ok':'err'); m.textContent=r.ok?'Done.':'Finished with errors — see output below.';
+    }catch(e){ m.className='msg err'; m.textContent=e.message; }
+    b.disabled=false; b.textContent='Push records';
+  };
 }
 
 // bootstrap: recover an existing session (cookie is HttpOnly, so fetch the CSRF token back)
 (async()=>{
-  try{ const s=await api('/api/session'); CSRF=s.csrf; USER=s.user; window.__ADMIN=s.admin; renderApp(); }
+  try{ const s=await api('/api/session'); CSRF=s.csrf; USER=s.user; window.__ADMIN=s.admin; window.__DOMAIN=s.domain; renderApp(); }
   catch(e){ renderLogin(); }
 })();
 </script>

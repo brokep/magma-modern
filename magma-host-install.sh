@@ -383,6 +383,7 @@ fi
 say "recording configuration in $CONFIG_DIR/magma.conf"
 CONF_CONTENT="# magma host install — written by magma-host-install.sh
 MAGMA_DOMAIN=$DOMAIN
+MAGMA_ADMIN_USER=$ADMIN_USER
 MAGMA_HOSTNAME=$HOSTNAME_FQDN
 MAGMA_SECRETS_DIR=$SECRETS_DIR
 MAGMA_SERVICE=$SERVICE
